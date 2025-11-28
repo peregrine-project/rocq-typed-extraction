@@ -1,0 +1,145 @@
+name: Build
+on:
+  workflow_dispatch:
+  push:
+    branches:
+    - 'master'
+    paths-ignore:
+    - '**.md'
+    - '**.gitignore'
+    - '**.opam'
+    - '**.nix'
+    - 'LICENSE'
+  pull_request:
+    paths-ignore:
+    - '**.md'
+    - '**.gitignore'
+    - '**.opam'
+    - '**.nix'
+    - 'LICENSE'
+concurrency:
+  group: "${{ github.workflow }}-${{ github.event.pull_request.number || github.head_ref || github.ref }}"
+  cancel-in-progress: true
+permissions:
+  contents: read
+env:
+  OCAML_COMILER_VERSION: "4.14.2"
+  JOBS: 4
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout branch ${{ github.ref_name }}
+        uses: actions/checkout@v6
+
+      - name: Set up OCaml
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: ${{env.OCAML_COMILER_VERSION}}
+          opam-repositories: |
+            rocq-released: https://rocq-prover.org/opam/released
+            default: https://opam.ocaml.org
+          opam-pin: false
+
+      - run: sudo apt-get update
+      - name: Restore opam cache
+        id: opam-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{github.workspace}}/_opam
+          key: opam-${{env.OCAML_COMILER_VERSION}}-${{hashFiles('.github/deps.opam.locked')}}
+          restore-keys: |
+            opam-${{env.OCAML_COMILER_VERSION}}-
+
+      - name: Build dependencies
+        run: |
+          opam install --deps-only -j${{ env.JOBS }} .github/deps.opam.locked
+          opam clean -a -c -s --logs
+
+      - name: Set up environment
+        run: |
+          echo "::group::Setting up problem matcher"
+          echo "::add-matcher::./.github/rocq-errors.json"
+          echo "::endgroup::"
+
+      - name: Build core
+        run: |
+          echo "::group::Build Core"
+          opam exec -- make -j${{ env.JOBS }} theory
+          echo "::endgroup::"
+
+          echo "::group::Build Plugin"
+          opam exec -- make -j${{ env.JOBS }} plugin
+          echo "::endgroup::"
+
+      - name: Build tests
+        run: |
+          echo "::group::Build tests"
+          opam exec -- make -j${{ env.JOBS }} tests
+          echo "::endgroup::"
+
+      - name: Upload extraction results
+        uses: actions/upload-artifact@v5
+        with:
+          name: extraction-results
+          path: tests/extracted-code
+          retention-days: 2
+
+      - name: Build documentation
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: |
+          echo "::group::Running rocqdoc"
+          opam exec -- make -j${{ env.JOBS }} html
+          echo "::endgroup::"
+
+      - name: Prepare documentation for deployment
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: docs
+
+  test:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch ${{ github.ref_name }}
+        uses: actions/checkout@v6
+
+      - name: Download extraction results
+        uses: actions/download-artifact@v6
+        with:
+          name: extraction-results
+          path: tests/extracted-code
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Test extraction
+        run: |
+          echo "::group::Running tests"
+          make -j${{ env.JOBS }} -C tests test-extraction
+          echo "::endgroup::"
+
+          echo "::group::Cleaning up"
+          make -j${{ env.JOBS }} -C tests clean-extraction-out-files
+          make -j${{ env.JOBS }} -C tests clean-compiled-extraction
+          echo "::endgroup::"
+
+  deploy-docs:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,40 @@
+name: Refresh cache
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: 0 1 * * MON
+concurrency:
+  group: "${{ github.workflow }}-${{ github.event.pull_request.number || github.head_ref || github.ref }}"
+  cancel-in-progress: true
+permissions:
+  contents: read
+env:
+  OCAML_COMILER_VERSION: "4.14.2"
+  JOBS: 4
+jobs:
+  cache:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch ${{ github.ref_name }}
+        uses: actions/checkout@v6
+
+      - run: sudo apt-get update
+      - name: Restore opam cache
+        id: opam-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{github.workspace}}/_opam
+          fail-on-cache-miss: true
+          key: opam-${{env.OCAML_COMILER_VERSION}}-${{hashFiles('.github/deps.opam.locked')}}
+          restore-keys: |
+            opam-${{env.OCAML_COMILER_VERSION}}-
+
+      - name: Set up OCaml
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: ${{env.OCAML_COMILER_VERSION}}
+          opam-repositories: |
+            rocq-released: https://rocq-prover.org/opam/released
+            default: https://opam.ocaml.org
+          opam-pin: false
+      - run: opam list
