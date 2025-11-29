@@ -1,0 +1,20 @@
+-Q ../common/theories TypedExtraction.Common
+-Q ../rust/theories TypedExtraction.Rust
+-Q ../elm/theories TypedExtraction.Elm
+-Q ../plugin/theories TypedExtraction.Plugin
+
+-arg -w -arg -default-output-directory
+-arg -w -arg -non-reversible-notation
+
+-Q theories TypedExtraction.Tests
+-I ../plugin/src
+-arg "-output-dir extracted-code"
+theories/BernsteinYangTermination.v
+theories/InternalFix.v
+theories/RustExtractTests.v
+theories/Ack.v
+theories/ElmExtractExamples.v
+theories/ElmExtractTests.v
+theories/ElmForms.v
+theories/RecordSet.v
+theories/RecordUpdate.v

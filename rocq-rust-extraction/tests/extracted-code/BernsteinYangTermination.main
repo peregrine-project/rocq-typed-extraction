@@ -1,3 +1,0 @@
-fn main() {
-  println!("{:?}", Program::new().RustExtraction_Test_BernsteinYangTermination_W(10))
-}
