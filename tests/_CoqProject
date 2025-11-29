@@ -1,3 +1,13 @@
+-Q ../theories RustExtraction
+-Q ../plugin/theories RustExtraction
+
+-Q theories RustExtraction.Test
+-I ../plugin/src
+-arg "-output-dir extracted-code"
+theories/BernsteinYangTermination.v
+theories/InternalFix.v
+theories/RustExtractTests.v
+
 -arg -w -arg -default-output-directory
 -arg -w -arg -non-reversible-notation
 
