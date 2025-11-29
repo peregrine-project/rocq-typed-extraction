@@ -3,7 +3,7 @@ From MetaRocq.Utils Require Import monad_utils.
 From MetaRocq.Utils Require Import bytestring.
 From MetaRocq.SafeChecker Require Import PCUICErrors.
 From MetaRocq.Erasure.Typed Require Import ResultMonad.
-From ElmExtraction Require Import Common.
+From TypedExtraction.Elm Require Import Common.
 
 Import String.
 Import monad_utils.MRMonadNotation.
