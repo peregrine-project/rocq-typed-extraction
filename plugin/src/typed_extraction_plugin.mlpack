@@ -76,4 +76,4 @@ Extraction0
 RustExtract
 PluginExtract
 
-G_rust_extraction
+G_typed_extraction

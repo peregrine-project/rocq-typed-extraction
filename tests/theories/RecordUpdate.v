@@ -1,2 +1,2 @@
-From ElmExtraction.Tests Require Export RecordSet.
+From TypedExtraction.Tests Require Export RecordSet.
 Export RecordSetNotations.

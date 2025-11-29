@@ -25,7 +25,6 @@ uninstall: RocqMakefile
 %: RocqMakefile force
 	+@make -f RocqMakefile $@
 force: ;
-all: theory
 
 # Do not forward these files
 Makefile _CoqProject: ;

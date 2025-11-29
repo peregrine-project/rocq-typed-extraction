@@ -1,5 +1,5 @@
 (** Examples of (mutual) nested fixpoints *)
-From RustExtraction Require Import Loader.
+From TypedExtraction.Plugin Require Import Loader.
 From Stdlib Require Import Arith.
 From Stdlib Require Import Bool.
 From Stdlib Require Import Extraction.
@@ -32,8 +32,8 @@ Fixpoint even n :=
 
 Definition even_odd (n : nat) : bool := even n.
 
-From RustExtraction Require Import ExtrRustBasic.
-From RustExtraction Require Import ExtrRustUncheckedArith.
+From TypedExtraction.Plugin Require Import ExtrRustBasic.
+From TypedExtraction.Plugin Require Import ExtrRustUncheckedArith.
 
-Redirect "Ack.rs" Rust Extract ack.
-Redirect "Even.rs" Rust Extract even.
+Redirect "rust/Ack.rs" Rust Extract ack.
+Redirect "rust/Even.rs" Rust Extract even.

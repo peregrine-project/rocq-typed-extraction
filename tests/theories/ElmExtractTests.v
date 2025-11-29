@@ -1,11 +1,11 @@
 (** * Tests for extraction to Elm *)
-From ElmExtraction Require Import Common.
+From TypedExtraction.Elm Require Import Common.
 From MetaRocq.Erasure.Typed Require Import Extraction.
-From ElmExtraction Require Import ElmExtract.
-From ElmExtraction Require Import PrettyPrinterMonad.
+From TypedExtraction.Elm Require Import ElmExtract.
+From TypedExtraction.Elm Require Import PrettyPrinterMonad.
 From MetaRocq.Erasure.Typed Require Import Optimize.
 From MetaRocq.Erasure.Typed Require Import ResultMonad.
-From ElmExtraction Require Import StringExtra.
+From TypedExtraction.Elm Require Import StringExtra.
 From MetaRocq.Common Require Import Kernames.
 From MetaRocq.Template Require Import Ast.
 From MetaRocq.Template Require Import TemplateMonad.

@@ -1,6 +1,6 @@
 (* Computation needed to show termination of the Bernstein-Yang modular inversion algorithm *)
 
-From RustExtraction Require Import Loader.
+From TypedExtraction.Plugin Require Import Loader.
 From Stdlib Require Import Bool.
 From Stdlib Require Import ZArith.
 
@@ -44,6 +44,6 @@ Extract Constant nat_shiftl => "fn ##name##(&'a self, a: u64, b: u64) -> u64 { a
 Extract Constant shiftl => "fn ##name##(&'a self, a: i64, b: i64) -> i64 { a << b }".
 Extract Constant shiftr => "fn ##name##(&'a self, a: i64, b: i64) -> i64 { a >> b }".
 
-From RustExtraction Require Import ExtrRustBasic.
-From RustExtraction Require Import ExtrRustUncheckedArith.
-Redirect "BernsteinYangTermination.rs" Rust Extract W.
+From TypedExtraction.Plugin Require Import ExtrRustBasic.
+From TypedExtraction.Plugin Require Import ExtrRustUncheckedArith.
+Redirect "rust/BernsteinYangTermination.rs" Rust Extract W.

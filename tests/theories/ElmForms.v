@@ -5,15 +5,15 @@ a list after validating the input data. We use the Rocq version of
 refinement types (a type with a predicate) to express the fact that
 the list of users contains only valid data. *)
 
-From ElmExtraction Require Import Common.
-From ElmExtraction Require Import PrettyPrinterMonad.
-From ElmExtraction Require Import ElmExtract.
+From TypedExtraction.Elm Require Import Common.
+From TypedExtraction.Elm Require Import PrettyPrinterMonad.
+From TypedExtraction.Elm Require Import ElmExtract.
 From MetaRocq.Erasure.Typed Require Import Extraction.
 From MetaRocq.Erasure.Typed Require Import Optimize.
 From MetaRocq.Erasure.Typed Require Import CertifyingInlining.
 From MetaRocq.Erasure.Typed Require Import ResultMonad.
-From ElmExtraction Require Import StringExtra.
-From ElmExtraction.Tests Require Import RecordUpdate.
+From TypedExtraction.Elm Require Import StringExtra.
+From TypedExtraction.Tests Require Import RecordUpdate.
 From MetaRocq.Common Require Import Kernames.
 From MetaRocq.Template Require Import Ast.
 From MetaRocq.Template Require Import TemplateMonad.
@@ -303,4 +303,4 @@ Definition elm_extraction (m : ElmMod) (TT : list (kername * string)) : Template
 Time MetaRocq Run (t <- elm_extraction USER_FORM_APP TT;;
                   tmDefinition "extracted_app" t).
 
-Redirect "extracted-code/elm-web-extract/UserList.elm" MetaRocq Run (tmMsg extracted_app).
+Redirect "elm/elm-web-extract/UserList.elm" MetaRocq Run (tmMsg extracted_app).

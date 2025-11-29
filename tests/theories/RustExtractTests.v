@@ -1,9 +1,9 @@
 (** * Tests for extraction to Rust *)
 From MetaRocq.Erasure.Typed Require Import Extraction.
 From MetaRocq.Erasure.Typed Require Import ResultMonad.
-From RustExtraction Require Import RustExtract.
-From RustExtraction Require Import Printing.
-From RustExtraction Require Import StringExtra.
+From TypedExtraction.Rust Require Import RustExtract.
+From TypedExtraction.Rust Require Import Printing.
+From TypedExtraction.Rust Require Import StringExtra.
 From MetaRocq.Template Require Import Ast.
 From MetaRocq.Common Require Import Kernames.
 From MetaRocq.Utils Require Import utils.
