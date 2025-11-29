@@ -17,7 +17,7 @@ A framework for extracting Rocq programs to Rust and Elm.
 - License: [MIT](LICENSE)
 - Compatible Rocq versions: 9.0
 - Additional dependencies: MetaRocq
-- Rocq namespace: `TODO`
+- Rocq namespace: `TypedExtraction`
 - Related publication(s):
   - [Extracting functional programs from Coq, in Coq](https://arxiv.org/abs/2108.02995) doi:[10.1017/S0956796822000077](https://doi.org/10.1017/S0956796822000077)
   - ["Extending MetaCoq Erasure: Extraction to Rust and Elm"](https://dannenkov.me/papers/extraction-rust-elm-coq-workshop2021.pdf)
