@@ -1,6 +1,5 @@
 .hidden
 *.tmp
-.DS_Store
 
 # Nix outputs
 result
@@ -65,13 +64,5 @@ nra.cache
 
 
 ## Editors
-
 ### VisualStudioCode ###
 .vscode/*
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
-
-### VisualStudioCode Patch ###
-# Ignore all local history of files
-.history
