@@ -9,10 +9,10 @@ From MetaRocq.Erasure.Typed Require Import ResultMonad.
 From Stdlib Require Import PeanoNat.
 From Stdlib Require Import List.
 From Stdlib.Program Require Import Basics.
-From RustExtraction Require Import Printing.
-From RustExtraction Require Import TopLevelFixes.
-From RustExtraction Require Import StringExtra.
-From RustExtraction Require Import PrettyPrinterMonad.
+From TypedExtraction.Rust Require Import Printing.
+From TypedExtraction.Rust Require Import TopLevelFixes.
+From TypedExtraction.Rust Require Import StringExtra.
+From TypedExtraction.Rust Require Import PrettyPrinterMonad.
 
 Module P := MetaRocq.PCUIC.PCUICAst.
 Module PT := MetaRocq.PCUIC.PCUICTyping.

@@ -17,7 +17,7 @@ Set Warnings "-extraction-opaque-accessed".
 Set Warnings "-extraction-reserved-identifier".
 
 From MetaRocq.Erasure Require Import EAst EAstUtils EInduction ELiftSubst EGlobalEnv Extract ErasureFunction Erasure.
-From RustExtraction Require Import PluginExtract.
+From TypedExtraction.Rust Require Import PluginExtract.
 From MetaRocq.Erasure.Typed Require Import Utils.
 
 
@@ -50,10 +50,10 @@ bytestrings from MetaRocq that leads to clashes. E.g. we cannot use
               temp)". *)
 
 #[local]
-Set Extraction Output Directory "plugin/src".
+Set Extraction Output Directory "../plugin/src".
 #[warnings="-extraction-axiom-to-realize"]
 Separate Extraction PluginExtract.extract
          (* The following directives ensure separate extraction does not produce name clashes *)
-          Bool Nat Stdlib.Strings.String bytestring.String RustExtraction.Common TemplateMonad.Common utils ELiftSubst EGlobalEnv Common.Transform ResultMonad.
+          Bool Nat Stdlib.Strings.String bytestring.String TypedExtraction.Rust.Common TemplateMonad.Common utils ELiftSubst EGlobalEnv Common.Transform ResultMonad.
 
 (* Definition . *)

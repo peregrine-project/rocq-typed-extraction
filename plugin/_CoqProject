@@ -120,3 +120,4 @@ theories/ExtrRustBasic.v
 theories/ExtrRustCheckedArith.v
 theories/ExtrRustUncheckedArith.v
 theories/Loader.v
+theories/ExtractExtraction.v

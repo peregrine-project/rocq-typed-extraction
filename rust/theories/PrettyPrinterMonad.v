@@ -4,7 +4,7 @@ From MetaRocq.Utils Require Import bytestring.
 From MetaRocq.SafeChecker Require Import PCUICErrors.
 From MetaRocq.Erasure.Typed Require Import Utils.
 From MetaRocq.Erasure.Typed Require Import ResultMonad.
-From RustExtraction Require Import Common.
+From TypedExtraction.Rust Require Import Common.
 
 Import String.
 Import monad_utils.MRMonadNotation.
