@@ -174,7 +174,7 @@ function fixTitle(){
   modulename = modulename.substring(modulename.lastIndexOf('.')+1);
   if (modulename === "toc") {modulename = "Table of Contents";}
   else if (modulename === "index") {modulename = "Index";}
-  else if (modulename === "//coq-rust-extraction/") {modulename = "Index";}
+  else if (modulename === "//rocq-typed-extraction/") {modulename = "Index";}
   else {modulename = modulename + ".v";};
   document.title = modulename;
 }
