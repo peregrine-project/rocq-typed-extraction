@@ -54,6 +54,6 @@ Set Extraction Output Directory "src".
 #[warnings="-extraction-axiom-to-realize"]
 Separate Extraction PluginExtract.extract
          (* The following directives ensure separate extraction does not produce name clashes *)
-          Bool Nat Stdlib.Strings.String bytestring.String TypedExtraction.Rust.Common TemplateMonad.Common utils ELiftSubst EGlobalEnv Common.Transform ResultMonad.
+          Bool Nat Stdlib.Strings.String bytestring.String TypedExtraction.Common.Common TemplateMonad.Common utils ELiftSubst EGlobalEnv Common.Transform ResultMonad.
 
 (* Definition . *)

@@ -1,8 +1,7 @@
+-Q ../common/theories TypedExtraction.Common
+
 -Q theories TypedExtraction.Rust
-theories/Common.v
-theories/PrettyPrinterMonad.v
 theories/Printing.v
 theories/RustExtract.v
-theories/StringExtra.v
 theories/TopLevelFixes.v
 theories/PluginExtract.v

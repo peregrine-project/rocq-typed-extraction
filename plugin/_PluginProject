@@ -66,6 +66,8 @@ src/pCUICNormal.ml
 src/pCUICNormal.mli
 src/pCUICPosition.ml
 src/pCUICPosition.mli
+src/pCUICPretty.ml
+src/pCUICPretty.mli
 src/pCUICProgram.ml
 src/pCUICProgram.mli
 src/pCUICPrimitive.ml

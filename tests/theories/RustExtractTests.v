@@ -3,7 +3,7 @@ From MetaRocq.Erasure.Typed Require Import Extraction.
 From MetaRocq.Erasure.Typed Require Import ResultMonad.
 From TypedExtraction.Rust Require Import RustExtract.
 From TypedExtraction.Rust Require Import Printing.
-From TypedExtraction.Rust Require Import StringExtra.
+From TypedExtraction.Common Require Import StringExtra.
 From MetaRocq.Template Require Import Ast.
 From MetaRocq.Common Require Import Kernames.
 From MetaRocq.Utils Require Import utils.

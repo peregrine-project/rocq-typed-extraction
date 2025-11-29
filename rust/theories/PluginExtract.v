@@ -4,7 +4,7 @@ From MetaRocq.Erasure.Typed Require Import ExAst.
 From MetaRocq.Erasure.Typed Require Import Extraction.
 From MetaRocq.Erasure.Typed Require Import ResultMonad.
 From MetaRocq.Erasure.Typed Require Import Utils.
-From TypedExtraction.Rust Require Import PrettyPrinterMonad.
+From TypedExtraction.Common Require Import PrettyPrinterMonad.
 From TypedExtraction.Rust Require Import Printing.
 From TypedExtraction.Rust Require Import RustExtract.
 From MetaRocq.Common Require Import Kernames.

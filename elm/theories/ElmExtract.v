@@ -3,9 +3,9 @@ From MetaRocq.Utils Require Import bytestring.
 From MetaRocq.Erasure.Typed Require Import Extraction.
 From MetaRocq.Erasure.Typed Require Import ExAst.
 From MetaRocq.Erasure.Typed Require Import ResultMonad.
-From TypedExtraction.Elm Require Import StringExtra.
-From TypedExtraction.Elm Require Import Common.
-From TypedExtraction.Elm Require Import PrettyPrinterMonad.
+From TypedExtraction.Common Require Import StringExtra.
+From TypedExtraction.Common Require Import Common.
+From TypedExtraction.Common Require Import PrettyPrinterMonad.
 From Stdlib Require Import List.
 
 Import ListNotations.

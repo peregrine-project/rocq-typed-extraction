@@ -2,8 +2,9 @@ From Stdlib Require Import List.
 From MetaRocq.Utils Require Import monad_utils.
 From MetaRocq.Utils Require Import bytestring.
 From MetaRocq.SafeChecker Require Import PCUICErrors.
+From MetaRocq.Erasure.Typed Require Import Utils.
 From MetaRocq.Erasure.Typed Require Import ResultMonad.
-From TypedExtraction.Elm Require Import Common.
+From TypedExtraction.Common Require Import Common.
 
 Import String.
 Import monad_utils.MRMonadNotation.
@@ -159,8 +160,7 @@ Definition wrap_EnvCheck {astr A} f (ec : EnvCheck astr A) : PrettyPrinter A :=
   end.
 
 Module P := PCUICAst.
-Definition wrap_typing_result {A} (Σ : P.PCUICEnvironment.global_env)
-                              (tr : typing_result A) : PrettyPrinter A :=
+Definition wrap_typing_result {A} (Σ : P.PCUICEnvironment.global_env) (tr : typing_result A) : PrettyPrinter A :=
   match tr with
   | Checked et => ret et
   | TypeError te =>

@@ -7,11 +7,11 @@
     the problems with paths for [Redirect]. We have to stick to the path,
     relative to the project root and in the interactive mode current
     directory is different. *)
-From TypedExtraction.Elm Require Import StringExtra.
-From TypedExtraction.Elm Require Import Common.
+From TypedExtraction.Common Require Import StringExtra.
+From TypedExtraction.Common Require Import Common.
 From MetaRocq.Erasure.Typed Require Import Extraction.
 From TypedExtraction.Elm Require Import ElmExtract.
-From TypedExtraction.Elm Require Import PrettyPrinterMonad.
+From TypedExtraction.Common Require Import PrettyPrinterMonad.
 From MetaRocq.Erasure.Typed Require Import ResultMonad.
 From MetaRocq.Erasure.Typed Require Import Optimize.
 From MetaRocq.Erasure.Typed Require Import CertifyingEta.

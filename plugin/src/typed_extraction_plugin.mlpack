@@ -22,6 +22,7 @@ PCUICChecker
 PCUICCumulativity
 PCUICEqualityDec
 PCUICLiftSubst
+PCUICPretty
 PCUICErrors
 PCUICCases
 PCUICNormal

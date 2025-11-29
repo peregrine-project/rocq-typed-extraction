@@ -5,14 +5,14 @@ a list after validating the input data. We use the Rocq version of
 refinement types (a type with a predicate) to express the fact that
 the list of users contains only valid data. *)
 
-From TypedExtraction.Elm Require Import Common.
-From TypedExtraction.Elm Require Import PrettyPrinterMonad.
+From TypedExtraction.Common Require Import Common.
+From TypedExtraction.Common Require Import PrettyPrinterMonad.
 From TypedExtraction.Elm Require Import ElmExtract.
 From MetaRocq.Erasure.Typed Require Import Extraction.
 From MetaRocq.Erasure.Typed Require Import Optimize.
 From MetaRocq.Erasure.Typed Require Import CertifyingInlining.
 From MetaRocq.Erasure.Typed Require Import ResultMonad.
-From TypedExtraction.Elm Require Import StringExtra.
+From TypedExtraction.Common Require Import StringExtra.
 From TypedExtraction.Tests Require Import RecordUpdate.
 From MetaRocq.Common Require Import Kernames.
 From MetaRocq.Template Require Import Ast.

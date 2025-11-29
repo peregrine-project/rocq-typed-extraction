@@ -7,6 +7,9 @@ From MetaRocq.Utils Require Import bytestring.
 Import String.
 Import ListNotations.
 Local Open Scope bs_scope.
+Local Open Scope positive.
+
+
 
 Definition str_rev (s : string) : string :=
   (fix f s acc :=
@@ -15,7 +18,6 @@ Definition str_rev (s : string) : string :=
      | String c s => f s (String c acc)
      end) s EmptyString.
 
-Local Open Scope positive.
 Definition hex_of_positive (p : positive) : string :=
   (fix f p acc :=
      match p with
@@ -134,52 +136,6 @@ Definition remove_char (c : byte) : string -> string :=
                        String c' (f s)
     end.
 
-Local Open Scope char.
-(** Structurally recursive starts_with with continuation from
-   rest of string if it does start with *)
-Definition starts_with_cont
-         (with_char : byte)
-         (with_str : string)
-         {A}
-         (cont : string -> A)
-         (s : string)
-         : option A :=
-  (fix f s c ws :=
-     match s with
-     | EmptyString => None
-     | String sc s =>
-       if (sc =? c)%byte then
-         match ws with
-         | EmptyString => Some (cont s)
-         | String wsc ws => f s wsc ws
-         end
-       else
-         None
-     end) s with_char with_str.
-
-Definition starts_with (with_str : string) (s : string) : bool :=
-  match with_str with
-  | EmptyString => true
-  | String wc ws => if starts_with_cont wc ws (fun _ => true) s then
-                      true
-                    else
-                      false
-  end.
-
-Definition replace (orig : string) (new : string) : string -> string :=
-  match orig with
-  | EmptyString => fun s => s
-  | String origc origs =>
-    fix replace s :=
-      match starts_with_cont origc origs replace s with
-      | Some s => new ++ s
-      | None => match s with
-                | EmptyString => EmptyString
-                | String c s => String c (replace s)
-                end
-    end
-  end.
-
 Fixpoint substring_from (from : nat) (s : string) : string :=
   match from, s with
   | 0%nat, _ => s
@@ -249,6 +205,52 @@ Definition uncapitalize (s : string) : string :=
   match s with
   | EmptyString => EmptyString
   | String c s => String (char_to_lower c) s
+  end.
+
+Local Open Scope char.
+(** Structurally recursive starts_with with continuation from
+   rest of string if it does start with *)
+Definition starts_with_cont
+         (with_char : byte)
+         (with_str : string)
+         {A}
+         (cont : string -> A)
+         (s : string)
+         : option A :=
+  (fix f s c ws :=
+     match s with
+     | EmptyString => None
+     | String sc s =>
+       if (sc =? c)%byte then
+         match ws with
+         | EmptyString => Some (cont s)
+         | String wsc ws => f s wsc ws
+         end
+       else
+         None
+     end) s with_char with_str.
+
+Definition starts_with (with_str : string) (s : string) : bool :=
+  match with_str with
+  | EmptyString => true
+  | String wc ws => if starts_with_cont wc ws (fun _ => true) s then
+                      true
+                    else
+                      false
+  end.
+
+Definition replace (orig : string) (new : string) : string -> string :=
+  match orig with
+  | EmptyString => fun s => s
+  | String origc origs =>
+    fix replace s :=
+      match starts_with_cont origc origs replace s with
+      | Some s => new ++ s
+      | None => match s with
+                | EmptyString => EmptyString
+                | String c s => String c (replace s)
+                end
+    end
   end.
 
 Definition str_split (on : string) : string -> list string :=
