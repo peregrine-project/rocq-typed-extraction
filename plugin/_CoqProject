@@ -1,7 +1,9 @@
--Q ../theories RustExtraction
+-Q ../common/theories TypedExtraction.Common
+-Q ../rust/theories TypedExtraction.Rust
+-Q ../elm/theories TypedExtraction.Elm
 
--Q theories RustExtraction
--generate-meta-for-package rocq-rust-extraction
+-Q theories TypedExtraction.Plugin
+-generate-meta-for-package rocq-typed-extraction
 -I src
 
 src/certifyingBeta.ml

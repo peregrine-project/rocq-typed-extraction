@@ -1,4 +1,4 @@
--Q theories RustExtraction
+-Q theories TypedExtraction.Rust
 theories/Common.v
 theories/PrettyPrinterMonad.v
 theories/Printing.v

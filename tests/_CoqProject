@@ -1,19 +1,17 @@
--Q ../theories RustExtraction
--Q ../plugin/theories RustExtraction
+-Q ../common/theories TypedExtraction.Common
+-Q ../rust/theories TypedExtraction.Rust
+-Q ../elm/theories TypedExtraction.Elm
+-Q ../plugin/theories RustExtraction.Plugin
 
--Q theories RustExtraction.Test
+-arg -w -arg -default-output-directory
+-arg -w -arg -non-reversible-notation
+
+-Q theories TypedExtraction.Test
 -I ../plugin/src
 -arg "-output-dir extracted-code"
 theories/BernsteinYangTermination.v
 theories/InternalFix.v
 theories/RustExtractTests.v
-
--arg -w -arg -default-output-directory
--arg -w -arg -non-reversible-notation
-
--Q ../theories ElmExtraction
-
--Q theories ElmExtraction.Tests
 theories/Ack.v
 theories/ElmExtractExamples.v
 theories/ElmExtractTests.v
