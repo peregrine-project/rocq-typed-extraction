@@ -64,15 +64,27 @@ jobs:
           echo "::add-matcher::./.github/rocq-errors.json"
           echo "::endgroup::"
 
-      - name: Build core
+      - name: Build Core
         run: |
-          echo "::group::Build Core"
-          opam exec -- make -j${{ env.JOBS }} theory
+          echo "::group::Build Common"
+          opam exec -- make -j${{ env.JOBS }} common
           echo "::endgroup::"
 
-      - name: Build tests
+          echo "::group::Build Elm"
+          opam exec -- make -j${{ env.JOBS }} elm
+          echo "::endgroup::"
+
+          echo "::group::Build Rust"
+          opam exec -- make -j${{ env.JOBS }} rust
+          echo "::endgroup::"
+
+          echo "::group::Build Plugin"
+          opam exec -- make -j${{ env.JOBS }} plugin
+          echo "::endgroup::"
+
+      - name: Build Tests
         run: |
-          echo "::group::Build tests"
+          echo "::group::Build Tests"
           opam exec -- make -j${{ env.JOBS }} tests
           echo "::endgroup::"
 
@@ -96,7 +108,31 @@ jobs:
         with:
           path: docs
 
-  test:
+  test-rust:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch ${{ github.ref_name }}
+        uses: actions/checkout@v6
+
+      - name: Download extraction results
+        uses: actions/download-artifact@v6
+        with:
+          name: extraction-results
+          path: tests/extracted-code
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Test Rust extraction
+        run: |
+          echo "::group::Running Rust Tests"
+          make -j${{ env.JOBS }} -C tests test-rust-extraction
+          echo "::endgroup::"
+
+  test-elm:
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -123,15 +159,10 @@ jobs:
         run: |
           npm install -g elm-test@0.19.1-revision9
 
-      - name: Test extraction
+      - name: Test Elm extraction
         run: |
-          echo "::group::Running tests"
-          make -j${{ env.JOBS }} -C tests test-extraction
-          echo "::endgroup::"
-
-          echo "::group::Cleaning up"
-          make -j${{ env.JOBS }} -C tests clean-extraction-out-files
-          make -j${{ env.JOBS }} -C tests clean-compiled-extraction
+          echo "::group::Running Elm Tests"
+          make -j${{ env.JOBS }} -C tests test-elm-extraction
           echo "::endgroup::"
 
   deploy-docs:
