@@ -4,7 +4,7 @@
   ## unless you made an automated or manual update
   ## to another supported format.
 
-  attribute = "RustExtraction";
+  attribute = "TypedExtraction";
 
   no-rocq-yet = true;
 
@@ -18,9 +18,9 @@
     rocqPackages = {
       rocq-core.override.version = "9.0.1";
     };
-  };
 
-  bundles."9.0".push-branches = ["master"];
+    push-branches = ["master"];
+  };
 
   ## Cachix caches to use in CI
   cachix.coq = {};
