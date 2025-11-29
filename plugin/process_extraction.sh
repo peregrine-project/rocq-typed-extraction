@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 
-if [[ ! -f "plugin/src/rust_extraction_plugin.cmxs" ||
-      "plugin/src/rust_extraction_plugin.cmxs" -ot "theories/ExtractExtraction.vo" ]]
+if [[ ! -f "src/rust_extraction_plugin.cmxs" ||
+      "src/rust_extraction_plugin.cmxs" -ot "theories/ExtractExtraction.vo" ]]
 then
-  cd plugin/src
+  cd src
   # Uncapitalize modules to circumvent a bug of rocqdep with mlpack files
   for i in *.ml*
   do

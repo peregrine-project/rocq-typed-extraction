@@ -50,7 +50,7 @@ bytestrings from MetaRocq that leads to clashes. E.g. we cannot use
               temp)". *)
 
 #[local]
-Set Extraction Output Directory "../plugin/src".
+Set Extraction Output Directory "src".
 #[warnings="-extraction-axiom-to-realize"]
 Separate Extraction PluginExtract.extract
          (* The following directives ensure separate extraction does not produce name clashes *)

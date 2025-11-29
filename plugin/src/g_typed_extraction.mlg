@@ -1,4 +1,4 @@
-DECLARE PLUGIN "rocq-rust-extraction.plugin"
+DECLARE PLUGIN "rocq-typed-extraction.plugin"
 
 {
 

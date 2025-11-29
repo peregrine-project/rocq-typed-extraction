@@ -13,8 +13,10 @@ result
 *~
 CoqMakefile
 RocqMakefile
+RocqMakefile.plugin
 CoqMakefile.conf
 RocqMakefile.conf
+RocqMakefile.plugin.conf
 Makefile.coq
 Makefile.rocq
 Makefile.coq.conf
