@@ -30,8 +30,11 @@ let
       "elm"
       "rust"
     ];
-    "all" = [
+    "tests" = [
       "plugin"
+    ];
+    "all" = [
+      "tests"
     ];
   };
 
