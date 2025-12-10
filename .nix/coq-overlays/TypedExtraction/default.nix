@@ -67,7 +67,7 @@ let
             ] ++ typedextraction-deps;
 
             patchPhase = ''
-              patchShebangs ./process_extraction.sh
+              patchShebangs ./plugin/process_extraction.sh
               patchShebangs ./tests/process-extraction-examples.sh
             '';
 
