@@ -18,6 +18,7 @@ depends: [
 ]
 
 build: [
+  ["bash" "./configure.sh"]
   [make "-j" "%{jobs}%" "-C" "rust"]
 ]
 
