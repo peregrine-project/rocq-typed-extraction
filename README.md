@@ -39,6 +39,7 @@ opam repo add rocq-released https://rocq-prover.org/opam/released
 git clone https://github.com/peregrine-project/rocq-typed-extraction.git
 cd rocq-typed-extraction
 opam install . --deps-only
+./configure.sh local
 make #or make -j <number-of-cores-on-your-machine>
 make install
 ```
