@@ -9,6 +9,7 @@ elm/elm-extract/*.html
 
 elm/elm-web-extract/elm-stuff/
 elm/elm-web-extract/node_modules/
-elm/elm-web-extract/src/
+elm/elm-web-extract/src/*
+!elm/elm-web-extract/src/views.elm
 elm/elm-web-extract/tests/
 elm/elm-web-extract/*.html
