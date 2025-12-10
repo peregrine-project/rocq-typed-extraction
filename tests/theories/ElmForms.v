@@ -245,7 +245,7 @@ Definition preamble : string :=
 Notation "'remap_ctor' c1 'of' ind 'to' c2" := ((<%% ind %%>.1, c1), c2) (at level 100).
 
 Notation "'string_literal' s" :=
-    (remap <%% s %%> (bytestring.String.concat "" [""""; (bytestring.String.of_string s); """"])) (at level 20) : string_scope.
+    (remap <%% (s)%string %%> (bytestring.String.concat "" [""""; (bytestring.String.of_string s); """"])) (at level 20) : string_scope.
 
 Definition TT :=
   [ remap <%% bool %%> "Bool"

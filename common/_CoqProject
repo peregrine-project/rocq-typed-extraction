@@ -1,3 +1,5 @@
+-arg -w -arg -non-reversible-notation
+
 -Q theories TypedExtraction.Common
 theories/Common.v
 theories/StringExtra.v

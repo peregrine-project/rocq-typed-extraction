@@ -4,7 +4,8 @@
 elm/elm-extract/elm-stuff/
 elm/elm-extract/node_modules/
 elm/elm-extract/src/
-elm/elm-extract/tests/
+elm/elm-extract/tests/*
+!elm/elm-extract/tests/.gitignore
 elm/elm-extract/*.html
 
 elm/elm-web-extract/elm-stuff/
