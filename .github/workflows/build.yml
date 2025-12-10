@@ -66,6 +66,10 @@ jobs:
 
       - name: Build Core
         run: |
+          echo "::group::Configure build"
+          opam exec -- ./configure.sh local
+          echo "::endgroup::"
+
           echo "::group::Build Common"
           opam exec -- make -j${{ env.JOBS }} common
           echo "::endgroup::"

@@ -1,6 +1,14 @@
 all: theory plugin
 .PHONY: all
 
+_CoqProject: _CoqProject.in _config
+	cat _config > _CoqProject
+	cat _CoqProject.in >> _CoqProject
+
+_PluginProject: _PluginProject.in _config
+	cat _config > _PluginProject
+	cat _PluginProject.in >> _PluginProject
+
 RocqMakefile: _CoqProject
 	rocq makefile -f _CoqProject -o RocqMakefile
 RocqMakefile.plugin: _PluginProject
@@ -22,6 +30,11 @@ clean: RocqMakefile
 	rm -f RocqMakefile
 	rm -f RocqMakefile.plugin
 .PHONY: clean
+
+clean-make:
+	rm -f RocqMakefile
+	rm -f RocqMakefile.Plugin
+.PHONY: clean-make
 
 install: RocqMakefile
 	+@make -f RocqMakefile install

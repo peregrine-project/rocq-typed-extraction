@@ -1,13 +1,8 @@
--Q ../common/theories TypedExtraction.Common
--Q ../rust/theories TypedExtraction.Rust
--Q ../elm/theories TypedExtraction.Elm
--Q ../plugin/theories TypedExtraction.Plugin
 
 -arg -w -arg -default-output-directory
 -arg -w -arg -non-reversible-notation
 
 -Q theories TypedExtraction.Tests
--I ../plugin/src
 -arg "-output-dir extracted-code"
 theories/BernsteinYangTermination.v
 theories/InternalFix.v

@@ -1,4 +1,3 @@
--Q ../common/theories TypedExtraction.Common
 
 -arg -w -arg -non-reversible-notation
 

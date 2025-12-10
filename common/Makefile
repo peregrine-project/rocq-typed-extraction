@@ -13,6 +13,10 @@ clean: RocqMakefile
 	rm -f RocqMakefile
 .PHONY: clean
 
+clean-make:
+	rm -f RocqMakefile
+.PHONY: clean-make
+
 install: RocqMakefile
 	+@make -f RocqMakefile install
 .PHONY: install

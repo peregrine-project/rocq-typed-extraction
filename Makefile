@@ -30,6 +30,14 @@ clean:
 	rm -rf docs
 .PHONY: clean
 
+clean-make:
+	+make -C common clean-make
+	+make -C elm clean-make
+	+make -C rust clean-make
+	+make -C plugin clean-make
+	+make -C tests clean-make
+.PHONY: clean-make
+
 install: all
 	+make -C common install
 	+make -C elm install

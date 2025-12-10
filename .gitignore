@@ -45,6 +45,10 @@ _opam/
 .merlin
 META.*
 META
+_config
+_CoqProject
+_PluginProject
+!/common/_CoqProject
 
 .coq-native/
 .rocq-native/

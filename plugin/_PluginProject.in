@@ -1,6 +1,3 @@
--Q ../common/theories TypedExtraction.Common
--Q ../rust/theories TypedExtraction.Rust
--Q ../elm/theories TypedExtraction.Elm
 
 -Q theories TypedExtraction.Plugin
 -generate-meta-for-package rocq-typed-extraction

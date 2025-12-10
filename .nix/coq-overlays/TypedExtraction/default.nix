@@ -67,9 +67,19 @@ let
             ] ++ typedextraction-deps;
 
             patchPhase = ''
+              patchShebangs ./configure.sh
               patchShebangs ./plugin/process_extraction.sh
               patchShebangs ./tests/process-extraction-examples.sh
             '';
+
+            configurePhase =
+              lib.optionalString (package == "all") pkgallMake
+              + ''
+                touch ${pkgpath}/_config
+              ''
+              + lib.optionalString (package == "single") ''
+                ./configure.sh local
+              '';
 
             preBuild = ''
               cd ${pkgpath}
