@@ -6,7 +6,7 @@ license: "MIT"
 homepage: "https://github.com/AU-COBRA/coq-rust-extraction"
 bug-reports: "https://github.com/AU-COBRA/coq-rust-extraction/issues"
 depends: [
-  "rocq-core" {= "9.1.1"}
+  "rocq-core" {= "9.1.0"}
   "rocq-stdlib" {= "9.0.0"}
   "rocq-metarocq-common" {= "1.4.1+9.1"}
   "rocq-metarocq-erasure" {= "1.4.1+9.1"}
