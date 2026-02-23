@@ -15,7 +15,7 @@ A framework for extracting Rocq programs to Rust and Elm.
   - Bas Spitters (initial)
   - Eske Hoy Nielsen
 - License: [MIT](LICENSE)
-- Compatible Rocq versions: 9.0
+- Compatible Rocq versions: 9.1
 - Additional dependencies: MetaRocq
 - Rocq namespace: `TypedExtraction`
 - Related publication(s):
