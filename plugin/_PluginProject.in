@@ -23,8 +23,6 @@ src/eGlobalEnv.ml
 src/eGlobalEnv.mli
 src/eLiftSubst.ml
 src/eLiftSubst.mli
-src/envMap.ml
-src/envMap.mli
 src/eOptimizePropDiscr.ml
 src/eOptimizePropDiscr.mli
 src/ePretty.ml
@@ -43,8 +41,6 @@ src/fin.ml
 src/fin.mli
 src/init0.ml
 src/init0.mli
-src/mRProd.ml
-src/mRProd.mli
 src/optimize.ml
 src/optimize.mli
 src/optimizePropDiscr.ml

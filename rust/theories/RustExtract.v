@@ -5,7 +5,7 @@ From MetaRocq.Erasure.Typed Require Import ExAst.
 From MetaRocq.Erasure.Typed Require Import Extraction.
 From MetaRocq.Erasure.Typed Require Import CertifyingInlining.
 From MetaRocq.Erasure.Typed Require Import Optimize.
-From MetaRocq.Erasure.Typed Require Import ResultMonad.
+From MetaRocq.Utils Require Import ResultMonad.
 From Stdlib Require Import PeanoNat.
 From Stdlib Require Import List.
 From Stdlib.Program Require Import Basics.
@@ -23,7 +23,7 @@ Module TUtil := MetaRocq.Template.AstUtils.
 Module EF := MetaRocq.Erasure.ErasureFunction.
 Module Ex := MetaRocq.Erasure.Typed.ExAst.
 
-Import MRMonadNotation.
+Import MonadNotation.
 
 Open Scope bs_scope.
 

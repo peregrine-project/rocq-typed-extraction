@@ -113,8 +113,8 @@ let remap_inline_constant kn =
   else
     None
 
-let check env evm c =
-  let prog = time "Quoting" (Ast_quoter.quote_term_rec ~bypass:false env evm) (EConstr.to_constr evm c) in
+let check ~opaque_access env evm c =
+  let prog = time "Quoting" (Ast_quoter.quote_term_rec ~bypass:false ~opaque_access env evm) (EConstr.to_constr evm c) in
   let remaps = { Printing.remap_inductive = remap_inductive;
                  Printing.remap_constant = remap_constant;
                  Printing.remap_inline_constant = remap_inline_constant; } in
@@ -125,7 +125,7 @@ let check env evm c =
 
 }
 
-VERNAC COMMAND EXTEND RustExtract CLASSIFIED AS QUERY
+VERNAC COMMAND EXTEND RustExtract CLASSIFIED AS QUERY STATE opaque_access
 | [ "Rust" "Extract" constr(c) ] -> {
     let env = Global.env () in
     let evm = Evd.from_env env in

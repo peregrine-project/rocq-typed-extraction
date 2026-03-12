@@ -3,11 +3,11 @@ From MetaRocq.Utils Require Import monad_utils.
 From MetaRocq.Utils Require Import bytestring.
 From MetaRocq.SafeChecker Require Import PCUICErrors.
 From MetaRocq.Erasure.Typed Require Import Utils.
-From MetaRocq.Erasure.Typed Require Import ResultMonad.
+From MetaRocq.Utils Require Import ResultMonad.
 From TypedExtraction.Common Require Import Common.
 
 Import String.
-Import monad_utils.MRMonadNotation.
+Import MonadNotation.
 Import ListNotations.
 Local Open Scope bs_scope.
 

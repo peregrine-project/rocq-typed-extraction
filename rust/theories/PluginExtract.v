@@ -2,7 +2,7 @@
 
 From MetaRocq.Erasure.Typed Require Import ExAst.
 From MetaRocq.Erasure.Typed Require Import Extraction.
-From MetaRocq.Erasure.Typed Require Import ResultMonad.
+From MetaRocq.Utils Require Import ResultMonad.
 From MetaRocq.Erasure.Typed Require Import Utils.
 From TypedExtraction.Common Require Import PrettyPrinterMonad.
 From TypedExtraction.Rust Require Import Printing.
@@ -14,7 +14,7 @@ From Stdlib Require Import String.
 From MetaRocq.Utils Require Import bytestring.
 
 Import ListNotations.
-Import MRMonadNotation.
+Import MonadNotation.
 
 Local Instance plugin_extract_preamble : Preamble :=
 {| top_preamble := [
@@ -159,6 +159,6 @@ Definition extract_lines
   '(_, s) <- timed "Printing"%string (fun _ => (finish_print_lines p));;
   Ok s.
 
-Definition extract p remaps should_inline :=
+Definition extract p remaps should_inline : (fun T => result T string) string :=
   lines <- extract_lines p remaps should_inline;;
   ret (bytestring.String.concat MRString.nl lines).
