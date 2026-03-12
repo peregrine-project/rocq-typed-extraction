@@ -1,5 +1,6 @@
 { lib, mkCoqDerivation,
-  which, coq, stdlib, metarocq,
+  which, coq, stdlib,
+  metarocq-erasure,
   version ? null,
   single ? false }:
 
@@ -66,7 +67,7 @@ let
             propagatedBuildInputs = [
               stdlib
               coq.ocamlPackages.findlib
-              metarocq
+              metarocq-erasure
             ] ++ typedextraction-deps;
 
             patchPhase = ''
