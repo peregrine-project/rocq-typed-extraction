@@ -4,7 +4,7 @@ From MetaRocq.Erasure.Typed Require Import Extraction.
 From TypedExtraction.Elm Require Import ElmExtract.
 From TypedExtraction.Common Require Import PrettyPrinterMonad.
 From MetaRocq.Erasure.Typed Require Import Optimize.
-From MetaRocq.Erasure.Typed Require Import ResultMonad.
+From MetaRocq.Utils Require Import ResultMonad.
 From TypedExtraction.Common Require Import StringExtra.
 From MetaRocq.Common Require Import Kernames.
 From MetaRocq.Template Require Import Ast.
@@ -14,7 +14,7 @@ From MetaRocq.Utils Require Import bytestring.
 
 Local Open Scope bs_scope.
 
-Import MRMonadNotation.
+Import MonadNotation.
 
 
 

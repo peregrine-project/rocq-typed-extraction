@@ -8,11 +8,11 @@ bug-reports: "https://github.com/AU-COBRA/coq-rust-extraction/issues"
 depends: [
   "rocq-core" {= "9.1.0"}
   "rocq-stdlib" {= "9.0.0"}
-  "rocq-metarocq-common" {= "1.4.1+9.1"}
-  "rocq-metarocq-erasure" {= "1.4.1+9.1"}
-  "rocq-metarocq-pcuic" {= "1.4.1+9.1"}
-  "rocq-metarocq-safechecker" {= "1.4.1+9.1"}
-  "rocq-metarocq-template" {= "1.4.1+9.1"}
-  "rocq-metarocq-template-pcuic" {= "1.4.1+9.1"}
-  "rocq-metarocq-utils" {= "1.4.1+9.1"}
+  "rocq-metarocq-common" {= "1.5.1+9.1"}
+  "rocq-metarocq-erasure" {= "1.5.1+9.1"}
+  "rocq-metarocq-pcuic" {= "1.5.1+9.1"}
+  "rocq-metarocq-safechecker" {= "1.5.1+9.1"}
+  "rocq-metarocq-template" {= "1.5.1+9.1"}
+  "rocq-metarocq-template-pcuic" {= "1.5.1+9.1"}
+  "rocq-metarocq-utils" {= "1.5.1+9.1"}
 ]

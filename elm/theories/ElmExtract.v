@@ -2,14 +2,14 @@ From MetaRocq.Utils Require Import monad_utils.
 From MetaRocq.Utils Require Import bytestring.
 From MetaRocq.Erasure.Typed Require Import Extraction.
 From MetaRocq.Erasure.Typed Require Import ExAst.
-From MetaRocq.Erasure.Typed Require Import ResultMonad.
+From MetaRocq.Utils Require Import ResultMonad.
 From TypedExtraction.Common Require Import StringExtra.
 From TypedExtraction.Common Require Import Common.
 From TypedExtraction.Common Require Import PrettyPrinterMonad.
 From Stdlib Require Import List.
 
 Import ListNotations.
-Import MRMonadNotation.
+Import MonadNotation.
 Import PrettyPrinterMonad.
 
 Module P := MetaRocq.PCUIC.PCUICAst.
@@ -91,7 +91,7 @@ Definition lookup_ind_decl (ind : inductive) : result Ex.one_inductive_body stri
   match Ex.lookup_env Σ (inductive_mind ind) with
   | Some (Ex.InductiveDecl {| Ex.ind_bodies := oibs |}) =>
     match nth_error oibs (inductive_ind ind) with
-    | Some body => ret body
+    | Some body => Ok body
     | None => Err ("Could not find inductive "
                      ^ string_of_nat (inductive_ind ind)
                      ^ " in mutual inductive " ^ string_of_kername (inductive_mind ind))

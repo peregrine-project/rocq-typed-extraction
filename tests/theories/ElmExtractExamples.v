@@ -12,7 +12,7 @@ From TypedExtraction.Common Require Import Common.
 From MetaRocq.Erasure.Typed Require Import Extraction.
 From TypedExtraction.Elm Require Import ElmExtract.
 From TypedExtraction.Common Require Import PrettyPrinterMonad.
-From MetaRocq.Erasure.Typed Require Import ResultMonad.
+From MetaRocq.Utils Require Import ResultMonad.
 From MetaRocq.Erasure.Typed Require Import Optimize.
 From MetaRocq.Erasure.Typed Require Import CertifyingEta.
 From TypedExtraction.Tests Require Import ElmExtractTests.
@@ -23,7 +23,7 @@ From MetaRocq.Template Require Import TemplateMonad.
 From MetaRocq.Utils Require Import utils.
 From MetaRocq.Utils Require Import bytestring.
 
-Import MRMonadNotation.
+Import MonadNotation.
 Local Open Scope bs_scope.
 
 #[local]

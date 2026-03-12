@@ -11,7 +11,7 @@ From TypedExtraction.Elm Require Import ElmExtract.
 From MetaRocq.Erasure.Typed Require Import Extraction.
 From MetaRocq.Erasure.Typed Require Import Optimize.
 From MetaRocq.Erasure.Typed Require Import CertifyingInlining.
-From MetaRocq.Erasure.Typed Require Import ResultMonad.
+From MetaRocq.Utils Require Import ResultMonad.
 From TypedExtraction.Common Require Import StringExtra.
 From TypedExtraction.Tests Require Import RecordUpdate.
 From MetaRocq.Common Require Import Kernames.
@@ -197,7 +197,7 @@ Local Instance ElmBoxes : ElmPrintConfig :=
      false_elim_def := "false_rec ()";
      print_full_names := false |}.
 
-Import MRMonadNotation.
+Import MonadNotation.
 
 Definition general_wrapped (Σ : global_env) (pre post : string)
            (seeds : KernameSet.t)

@@ -1,17 +1,17 @@
 (** * Tests for extraction to Rust *)
 From MetaRocq.Erasure.Typed Require Import Extraction.
-From MetaRocq.Erasure.Typed Require Import ResultMonad.
 From TypedExtraction.Rust Require Import RustExtract.
 From TypedExtraction.Rust Require Import Printing.
 From TypedExtraction.Common Require Import StringExtra.
 From MetaRocq.Template Require Import Ast.
 From MetaRocq.Common Require Import Kernames.
 From MetaRocq.Utils Require Import utils.
+From MetaRocq.Utils Require Import ResultMonad.
 From MetaRocq.Utils Require Import bytestring.
 
 
 Import PrettyPrinterMonad.
-Import MRMonadNotation.
+Import MonadNotation.
 Local Open Scope bs_scope.
 
 
@@ -23,7 +23,7 @@ Local Instance RustConfig : RustPrintConfig :=
 
 Definition default_attrs : ind_attr_map := fun _ => "#[derive(Debug, Clone)]".
 
-Definition extract (p : program) : result _ _ :=
+Definition extract (p : program) : (fun T => result T string) string :=
   entry <- match p.2 with
            | T.tConst kn _ => ret kn
            | T.tInd ind _ => ret (inductive_mind ind)
