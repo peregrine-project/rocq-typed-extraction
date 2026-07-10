@@ -5,3 +5,4 @@ theories/ExtractExtraction.v
 theories/ExtrRustBasic.v
 theories/ExtrRustCheckedArith.v
 theories/ExtrRustUncheckedArith.v
+theories/ExtrRustGMP.v

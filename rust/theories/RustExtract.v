@@ -18,6 +18,9 @@ Module P := MetaRocq.PCUIC.PCUICAst.
 Module PT := MetaRocq.PCUIC.PCUICTyping.
 Module T2P := MetaRocq.TemplatePCUIC.TemplateToPCUIC.
 Module E := MetaRocq.Erasure.EAst.
+(* [subst] — used by [native_rec_body] to rewrite a single fixpoint's
+   self-reference into a direct call to the enclosing constant. *)
+From MetaRocq.Erasure Require ELiftSubst.
 Module T := MetaRocq.Template.Ast.
 Module TUtil := MetaRocq.Template.AstUtils.
 Module EF := MetaRocq.Erasure.ErasureFunction.
@@ -225,20 +228,97 @@ Fixpoint print_type_aux (Γ : list ident) (t : box_type) (args : list (PrettyPri
 
 Definition print_type Γ t := print_type_aux Γ t [].
 
+(* Whether a box_type contains no free type variables. Only such types are
+   safe to print outside of a definition's own [Γty] context: printing a
+   [TVar n] requires resolving [n] against the [Γty] of the definition that
+   introduced it, and at an arbitrary call site we do not have that context
+   available (nor, without full type inference, the type it was instantiated
+   to). Restricting closure-parameter annotations (see [print_term]'s
+   [tApp] case) to [box_type_closed] domains sidesteps this alignment
+   problem entirely: we simply never print a [TVar] we can't resolve. *)
+Fixpoint box_type_closed (t : box_type) : bool :=
+  match t with
+  | TVar _ => false
+  | TBox | TAny | TInd _ | TConst _ => true
+  | TArr dom cod => box_type_closed dom && box_type_closed cod
+  | TApp hd arg => box_type_closed hd && box_type_closed arg
+  end.
+
+(* Compare an argument list to [tRel (k-1); ...; tRel 0], i.e. the [k] outer
+   lambda variables in application order (the shape of a fully eta-expanded
+   fixpoint [(fix ..) x1 .. xk]). *)
+Definition nrb_is_eta_args (k : nat) (args : list term) : bool :=
+  let fix chk (i : nat) (args : list term) : bool :=
+    match i, args with
+    | 0, nil => true
+    | S i', tRel j :: args' => andb (Nat.eqb j i') (chk i' args')
+    (* An erased type/proof argument is a [()] value, interchangeable with the
+       (also erased) outer slot it fills; treat it as an eta match.  This covers
+       polymorphic recursors [λA. (fix) box l1 ..] whose type slot erases to a
+       box rather than the [A] variable. *)
+    | S i', tBox :: args' => chk i' args'
+    | _, _ => false
+    end in
+  chk k args.
+
+(* Native recursion.  A single (non-mutual) fixpoint constant [kn] -- possibly
+   eta-wrapped as [λx1..λxk. (fix f := λ.. body) x1 .. xk] (the shape erasure
+   produces) -- is compiled to a native recursive [fn].  Strip the [k] outer
+   lambdas; when the core is the fixpoint applied to exactly those [k] variables
+   (or a bare fixpoint, [k]=0), drop the eta wrapper and return the fixpoint body
+   with its self-variable replaced by [tConst kn].  Recursive calls then print as
+   direct [self.<name>(..)] calls (see [print_const]) -- no heap
+   [Cell<Option<&dyn Fn>>], no dynamic dispatch.  Any other shape (mutual fix, or
+   a fix that captures outer variables without being applied to them) is returned
+   unchanged and handled by [print_term]'s [tFix] closure-cell case. *)
+Definition native_rec_body (kn : kername) (body : term) : term :=
+  let fix strip (acc : list name) (b : term) : list name * term :=
+    match b with
+    | tLambda na b' => strip (na :: acc) b'
+    | _ => (acc, b)
+    end in
+  let '(acc, core) := strip nil body in
+  let k := #|acc| in
+  let '(hd, args) := EAstUtils.decompose_app core in
+  match hd with
+  | tFix (d :: nil) 0 =>
+    if nrb_is_eta_args k args then
+      ELiftSubst.subst [tConst kn] 0 (E.dbody d)
+    else match args with
+    | nil =>
+      let inner := ELiftSubst.subst
+                     [mkApps (tConst kn) (rev_map tRel (seq 0 k))] 0 (E.dbody d) in
+      fold_left (fun t na => tLambda na t) acc inner
+    | _ => body
+    end
+  | _ => body
+  end.
+
 (* Get number of arguments that a constant expects when we print it *)
 Definition get_num_inline_args (kn : kername) : PrettyPrinter nat :=
   cst <- wrap_option
            (Ex.lookup_constant Σ kn)
            ("Could not find constant " ++ (string_of_kername kn));;
+  (* A config-path remap keeps the erased body, but its arity is the arity of
+     the constant's TYPE (the remap supplies a fixed uncurried Rust body), so
+     count type arrows there rather than leading lambdas of the body. *)
+  match remap_constant remaps kn with
+  | Some _ => ret #|fst (decompose_arr (snd (Ex.cst_type cst)))|
+  | None =>
   match Ex.cst_body cst with
   | None => ret #|fst (decompose_arr (snd (Ex.cst_type cst)))|
   | Some body =>
+    (* A single (non-mutual) fixpoint is compiled as a native recursive [fn]
+       (see [print_constant]); after [native_rec_body] its arity is the number
+       of leading lambdas, so callers emit a direct saturated call. *)
+    let body := native_rec_body kn body in
     let fix count body ty :=
         match body, ty with
         | tLambda _ body, TArr dom cod => S (count body cod)
         | _, _ => 0
         end in
     ret (count body (snd (Ex.cst_type cst)))
+  end
   end.
 
 Definition print_app
@@ -438,6 +518,37 @@ Definition needs_block (t : term) : bool :=
   | _ => false
   end.
 
+(* Pure (non-monadic) decomposition of an application spine into its
+   ultimate head and the list of arguments in left-to-right order, e.g.
+   [decompose_app_terms (tApp (tApp hd a1) a2) = (hd, [a1; a2])]. Used only
+   to look up parameter types for annotation purposes below; the actual
+   subterms fed to [print_term]'s recursive calls always come from direct
+   pattern matches on [t], never from this helper's output, so it has no
+   bearing on the Fixpoint's structural-recursion / guardedness proof. *)
+Fixpoint decompose_app_terms (t : term) : term * list term :=
+  match t with
+  | tApp hd a =>
+    let (h, args) := decompose_app_terms hd in
+    (h, (args ++ [a])%list)
+  | _ => (t, [])
+  end.
+
+(* If [head] is a reference to a known global constant, return the box_type
+   of each of its declared parameters (in order), as recorded in its
+   erasure-time type signature. Anything else (locally bound heads,
+   constructors, unknown constants) yields no information: callers must
+   treat the empty list as "no annotation available" rather than "this
+   function takes zero arguments". *)
+Definition domain_types_for_head (head : term) : list box_type :=
+  match head with
+  | tConst kn =>
+    match Ex.lookup_constant Σ kn with
+    | Some cst => fst (decompose_arr (snd (Ex.cst_type cst)))
+    | None => []
+    end
+  | _ => []
+  end.
+
 Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit :=
   match t with
   | tBox => append term_box_symbol
@@ -489,14 +600,61 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
 
   | tApp head arg =>
 
-    (fix f head args_printed {struct head} :=
+    (* If the ultimate head of this application spine is a known,
+       non-polymorphic global constant, we know the box_type of each
+       argument position. When an argument in such a position is itself a
+       bare [tLambda], we can annotate its closure parameter with that
+       domain type instead of leaving it for Rust to (fail to) infer. We
+       require the argument count to exactly match the constant's declared
+       arity so there is never any ambiguity about which domain type lines
+       up with which argument (under- or over-application simply disables
+       annotation for this application). Polymorphic domains (containing a
+       [TVar]) are also left unannotated, since we have no [Γty] context at
+       an arbitrary call site to resolve them against (see
+       [box_type_closed] above). *)
+    let (true_head, arg_terms) := decompose_app_terms t in
+    let dtys := domain_types_for_head true_head in
+    let rev_annots :=
+        if Nat.eqb #|arg_terms| #|dtys|
+        then rev (map (fun d => Some d) dtys)
+        else repeat None #|arg_terms| in
+    let (first_annot, rest_annots) :=
+        match rev_annots with
+        | a :: r => (a, r)
+        | [] => (None, [])
+        end in
+
+    (fix f head args_printed annots {struct head} :=
        match head with
        | tApp head arg =>
+         let (cur, rest) :=
+             match annots with
+             | a :: r => (a, r)
+             | [] => (None, [])
+             end in
          let printed_arg :=
              (if needs_block arg then append "{ " else ret tt);;
-             print_term Γ arg;;
-             if needs_block arg then append " }" else ret tt in
-         f head (printed_arg :: args_printed)
+             (match arg, cur with
+              | tLambda na body, Some (TArr d _) =>
+                if box_type_closed d then
+                  (name <- fresh_ident na Γ;;
+                   col <- get_current_line_length;;
+                   push_indent col;;
+                   append ("self.closure(move |" ++ name ++ ": ");;
+                   print_type [] d;;
+                   append "| {";;
+                   push_indent (col + indent_size);;
+                   append_nl;;
+                   print_term (name :: Γ) body;;
+                   pop_indent;;
+                   append_nl;;
+                   append "})";;
+                   pop_indent)
+                else print_term Γ arg
+              | _, _ => print_term Γ arg
+              end);;
+             (if needs_block arg then append " }" else ret tt) in
+         f head (printed_arg :: args_printed) rest
 
        | tConstruct ind i [] => print_constructor ind i args_printed
        | tConstruct ind i (_ :: _) =>
@@ -517,10 +675,29 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
            (fun pref a => append pref;; a;; append ")";; ret ")(") args_printed "(";;
          ret tt
 
-       end) head [if needs_block arg then
-                    append "{ ";; print_term Γ arg;; append " }"
-                  else
-                    print_term Γ arg]
+       end) head
+      [(if needs_block arg then append "{ " else ret tt);;
+       (match arg, first_annot with
+        | tLambda na body, Some (TArr d _) =>
+          if box_type_closed d then
+            (name <- fresh_ident na Γ;;
+             col <- get_current_line_length;;
+             push_indent col;;
+             append ("self.closure(move |" ++ name ++ ": ");;
+             print_type [] d;;
+             append "| {";;
+             push_indent (col + indent_size);;
+             append_nl;;
+             print_term (name :: Γ) body;;
+             pop_indent;;
+             append_nl;;
+             append "})";;
+             pop_indent)
+          else print_term Γ arg
+        | _, _ => print_term Γ arg
+        end);;
+       (if needs_block arg then append " }" else ret tt)]
+      rest_annots
 
   | tConst kn => print_const kn []
   | tConstruct ind i [] => print_constructor ind i []
@@ -627,6 +804,10 @@ Definition print_constant
         (append_join ", " (map (fun na => na ++ ": Copy") Γty));;
       append "(&'a self";;
 
+      (* Native recursion: rewrite a single fixpoint's self-reference to a
+         direct call to this constant, so recursion compiles to a native
+         recursive [fn] rather than a heap [Cell<Option<&dyn Fn>>]. *)
+      let body := native_rec_body kn body in
       (fix print_top Γ body ty :=
          match body, ty with
          | tLambda na body, TArr dom cod =>
@@ -667,14 +848,20 @@ Definition print_constant
      append_nl;;
 
      push_use (rname ++ "__curried");;
-     eta_term <-
-     (fix make_eta_term n body ty :=
-        match body, ty with
-        | tLambda na body, TArr dom cod =>
-          eta_term <- make_eta_term (S n) body cod;;
-          ret (tLambda na eta_term)
-        | _, _ => ret (mkApps (tConst kn) (rev_map tRel (seq 0 n)))
-        end) 0 body ty;;
+     (* Eta-expand to the FULL arity reported by [get_num_inline_args], rather
+        than to the number of leading lambdas of the erased body.  Those two
+        disagree for a fixpoint-bodied constant (whose body is [λ.. (fix ..)])
+        and for a remapped constant (whose body is irrelevant, the arity coming
+        from the type).  Expanding to too few arguments makes [print_const] see
+        an under-application and route the call back to this very wrapper, so
+        [foo__curried] would call itself and diverge. *)
+     let eta_term :=
+       (fix wrap (k : nat) (t : term) : term :=
+          match k with
+          | 0 => t
+          | S k' => wrap k' (tLambda nAnon t)
+          end) num_inline_args
+         (mkApps (tConst kn) (rev_map tRel (seq 0 num_inline_args))) in
      print_term [] eta_term;;
 
      pop_indent;;
