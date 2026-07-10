@@ -78,9 +78,9 @@ Module ex1.
     "  }";
     "}";
     "fn proj1_sig__curried<A: Copy>(&'a self) -> &'a dyn Fn(&'a Sig<'a, A>) -> A {";
-    "  self.closure(move |e| {";
+    "  self.closure(move |x| {";
     "    self.proj1_sig(";
-    "      e)";
+    "      x)";
     "  })";
     "}";
     "";
@@ -126,9 +126,9 @@ Module ex2.
     "  }";
     "}";
     "fn proj1_sig__curried<A: Copy>(&'a self) -> &'a dyn Fn(&'a Sig<'a, A>) -> A {";
-    "  self.closure(move |e| {";
+    "  self.closure(move |x| {";
     "    self.proj1_sig(";
-    "      e)";
+    "      x)";
     "  })";
     "}";
     "";
@@ -175,11 +175,11 @@ Module ex3.
     "  }";
     "}";
     "fn add__curried(&'a self) -> &'a dyn Fn(&'a Nat<'a>) -> &'a dyn Fn(&'a Nat<'a>) -> &'a Nat<'a> {";
-    "  self.closure(move |n| {";
-    "    self.closure(move |m| {";
+    "  self.closure(move |x| {";
+    "    self.closure(move |x2| {";
     "      self.add(";
-    "        n,";
-    "        m)";
+    "        x,";
+    "        x2)";
     "    })";
     "  })";
     "}" $>.
@@ -246,11 +246,11 @@ Module ex4.
     "  }";
     "}";
     "fn ack__curried(&'a self) -> &'a dyn Fn(&'a Nat<'a>) -> &'a dyn Fn(&'a Nat<'a>) -> &'a Nat<'a> {";
-    "  self.closure(move |n| {";
-    "    self.closure(move |m| {";
+    "  self.closure(move |x| {";
+    "    self.closure(move |x2| {";
     "      self.ack(";
-    "        n,";
-    "        m)";
+    "        x,";
+    "        x2)";
     "    })";
     "  })";
     "}" $>.
@@ -288,9 +288,9 @@ Module ex5.
     "  f";
     "}";
     "fn code__curried(&'a self) -> &'a dyn Fn(&'a T<'a>) -> &'a T<'a> {";
-    "  self.closure(move |f| {";
+    "  self.closure(move |x| {";
     "    self.code(";
-    "      f)";
+    "      x)";
     "  })";
     "}" $>.
   Proof. vm_compute. reflexivity. Qed.
@@ -355,9 +355,9 @@ Module SafeHead.
     "  }";
     "}";
     "fn proj1_sig__curried<A: Copy>(&'a self) -> &'a dyn Fn(&'a Sig<'a, A>) -> A {";
-    "  self.closure(move |e| {";
+    "  self.closure(move |x| {";
     "    self.proj1_sig(";
-    "      e)";
+    "      x)";
     "  })";
     "}";
     "";
@@ -365,9 +365,9 @@ Module SafeHead.
     "  panic!(""Absurd case!"")";
     "}";
     "fn False_rect__curried<P: Copy>(&'a self) -> &'a dyn Fn(()) -> P {";
-    "  self.closure(move |P| {";
+    "  self.closure(move |x| {";
     "    self.False_rect(";
-    "      P)";
+    "      x)";
     "  })";
     "}";
     "";
@@ -388,9 +388,9 @@ Module SafeHead.
     "           })(())";
     "}";
     "fn safe_head__curried<A: Copy>(&'a self) -> &'a dyn Fn(&'a Sig<'a, &'a List<'a, A>>) -> A {";
-    "  self.closure(move |non_empty_list| {";
+    "  self.closure(move |x| {";
     "    self.safe_head(";
-    "      non_empty_list)";
+    "      x)";
     "  })";
     "}";
     "";
@@ -414,10 +414,10 @@ Module SafeHead.
     "}";
     "fn repeat__curried<A: Copy>(&'a self) -> &'a dyn Fn(A) -> &'a dyn Fn(&'a Nat<'a>) -> &'a List<'a, A> {";
     "  self.closure(move |x| {";
-    "    self.closure(move |n| {";
+    "    self.closure(move |x2| {";
     "      self.repeat(";
     "        x,";
-    "        n)";
+    "        x2)";
     "    })";
     "  })";
     "}";
@@ -435,11 +435,11 @@ Module SafeHead.
     "              n))))))";
     "}";
     "fn head_of_repeat_plus_one__curried<A: Copy>(&'a self) -> &'a dyn Fn(&'a Nat<'a>) -> &'a dyn Fn(A) -> A {";
-    "  self.closure(move |n| {";
-    "    self.closure(move |a| {";
+    "  self.closure(move |x| {";
+    "    self.closure(move |x2| {";
     "      self.head_of_repeat_plus_one(";
-    "        n,";
-    "        a)";
+    "        x,";
+    "        x2)";
     "    })";
     "  })";
     "}" $>.
