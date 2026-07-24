@@ -71,3 +71,4 @@ nra.cache
 ## Editors
 ### VisualStudioCode ###
 .vscode/*
+.claude/
