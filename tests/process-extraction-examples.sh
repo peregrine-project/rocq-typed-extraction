@@ -4,7 +4,7 @@ RUST_PATH=./extracted-code/rust/
 RUST_SUFFIX_PATH=extracted/src/
 RUST_SUFFIX=extracted/src/main.rs
 
-rust_examples="BernsteinYangTermination Ack Even"
+rust_examples="BernsteinYangTermination Ack Even PhantomParams"
 echo "Processing Rust extraction"
 for f in ${rust_examples}
 do
