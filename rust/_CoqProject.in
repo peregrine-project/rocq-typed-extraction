@@ -3,4 +3,5 @@
 theories/Printing.v
 theories/RustExtract.v
 theories/TopLevelFixes.v
+theories/FieldDCE.v
 theories/PluginExtract.v

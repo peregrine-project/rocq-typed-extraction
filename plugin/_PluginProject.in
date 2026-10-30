@@ -83,6 +83,8 @@ src/resultMonad.ml
 src/resultMonad.mli
 src/rustExtract.ml
 src/rustExtract.mli
+src/fieldDCE.ml
+src/fieldDCE.mli
 src/pluginExtract.ml
 src/pluginExtract.mli
 src/erasureFunction.ml

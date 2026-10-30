@@ -226,6 +226,50 @@ Fixpoint print_type_aux (Γ : list ident) (t : box_type) (args : list (PrettyPri
 Definition print_type Γ t := print_type_aux Γ t [].
 
 (* Get number of arguments that a constant expects when we print it *)
+(** Pure version of [get_num_inline_args], 0 for unknown constants. *)
+Definition num_inline_args_of (kn : kername) : nat :=
+  match Ex.lookup_constant Σ kn with
+  | None => 0
+  | Some cst =>
+    match Ex.cst_body cst with
+    | None => #|fst (decompose_arr (snd (Ex.cst_type cst)))|
+    | Some body =>
+      let fix count body ty :=
+          match body, ty with
+          | tLambda _ body, TArr dom cod => S (count body cod)
+          | _, _ => 0
+          end in
+      count body (snd (Ex.cst_type cst))
+    end
+  end.
+
+(** Constants that occur applied to fewer arguments than they take inline,
+    i.e. those whose [__curried] variant is referenced. [nargs] is the number
+    of arguments the term at hand is applied to. *)
+Fixpoint partially_applied (nargs : nat) (t : term) : list kername :=
+  match t with
+  | tApp f a => partially_applied (S nargs) f ++ partially_applied 0 a
+  | tConst kn => if (nargs <? num_inline_args_of kn)%nat then [kn] else []
+  | tLambda _ b => partially_applied 0 b
+  | tLetIn _ b t => partially_applied 0 b ++ partially_applied 0 t
+  | tCase _ d brs =>
+    partially_applied 0 d ++ flat_map (fun br => partially_applied 0 (snd br)) brs
+  | tProj _ t => partially_applied 0 t
+  | tFix defs _ | tCoFix defs _ =>
+    flat_map (fun d => partially_applied 0 (EAst.dbody d)) defs
+  | tEvar _ l | tConstruct _ _ l => flat_map (partially_applied 0) l
+  | _ => []
+  end.
+
+Definition curried_constants : KernameSet.t :=
+  fold_left (fun acc '(_, decl) =>
+               match decl with
+               | Ex.ConstantDecl {| Ex.cst_body := Some body |} =>
+                 fold_left (fun acc kn => KernameSet.add kn acc)
+                           (partially_applied 0 body) acc
+               | _ => acc
+               end) Σ KernameSet.empty.
+
 Definition get_num_inline_args (kn : kername) : PrettyPrinter nat :=
   cst <- wrap_option
            (Ex.lookup_constant Σ kn)
@@ -590,8 +634,45 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
     append ((nth i cells "") ++ ".get().unwrap()");;
     pop_indent
 
-  | tProj (mkProjection ind pars c) t =>
-    printer_fail ("unhandled tProj on " ^ (string_of_kername (inductive_mind ind)))
+  | tProj (mkProjection ind npars c) t =>
+    (* A projection out of a single-constructor inductive, printed as a match
+       that binds every field and returns field [c]; the pattern has the same
+       shape as the branches printed by [print_case]. *)
+    oib <- wrap_result (lookup_ind_decl ind) id;;
+    match Ex.ind_ctors oib with
+    | [(ctor_name, data, _)] =>
+      let rem := remap_inductive remaps ind in
+      let field i := ("__f" ^ string_of_nat i)%bs in
+      let fields := map field (seq 0 #|data|) in
+      let nextra := if rem then npars else S npars in
+      let args := (List.repeat "_" nextra ++ fields)%list in
+      col <- get_current_line_length;;
+      push_indent col;;
+      append "match ";;
+      print_term Γ t;;
+      append " {";;
+      push_indent (col + indent_size);;
+      append_nl;;
+      match rem with
+      | Some rem =>
+        s <- wrap_option (nth_error (re_ind_ctors rem) 0)
+                         ((string_of_inductive ind) ^ "' does not remap its constructor");;
+        append s
+      | None =>
+        append "&";;
+        print_ind ind;;
+        append "::";;
+        append (clean_global_ident ctor_name)
+      end;;
+      print_parenthesized (0 <? #|args|)%nat (append_join ", " args);;
+      append (" => " ^ field c ^ ",");;
+      pop_indent;;
+      append_nl;;
+      append "}";;
+      pop_indent
+    | _ => printer_fail ("projection out of a type that is not a record: "
+                          ^ (string_of_kername (inductive_mind ind)))
+    end
 
   | tCoFix _ _ => printer_fail "Cannot handle tCoFix yet"
   | tPrim _ => printer_fail "Cannot handle Rocq primitive types yet"
@@ -600,6 +681,7 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
   end.
 
 Definition print_constant
+           (needs_curried : kername -> bool)
            (kn : kername)
            (type : (list name * box_type))
            (body : E.term) : PrettyPrinter unit :=
@@ -653,7 +735,7 @@ Definition print_constant
 
   (* Print curried version if there were inlined args *)
   num_inline_args <- get_num_inline_args kn;;
-  (if (0 <? num_inline_args)%nat then
+  (if andb (0 <? num_inline_args)%nat (needs_curried kn) then
      append_nl;;
      append ("fn " ++ rname ++ "__curried");;
      print_parenthesized_with
@@ -783,6 +865,7 @@ Definition print_type_alias
   end.
 
 Fixpoint print_decls_aux
+         (needs_curried : kername -> bool)
          (decls : list (kername * bool * Ex.global_decl))
          (prefix : PrettyPrinter unit) : PrettyPrinter unit :=
   match decls with
@@ -790,7 +873,7 @@ Fixpoint print_decls_aux
   | (kn, has_deps, decl) :: decls =>
     match decl with
     | Ex.ConstantDecl {| Ex.cst_type := type; Ex.cst_body := Some body |} =>
-      prefix;; print_constant kn type body
+      prefix;; print_constant needs_curried kn type body
     | Ex.InductiveDecl mib =>
       if remap_inductive remaps (mkInd kn 0) then
         ret tt
@@ -799,11 +882,11 @@ Fixpoint print_decls_aux
     | Ex.TypeAliasDecl (Some (tvars, bt)) => prefix;; print_type_alias kn tvars bt
     | _ => ret tt
     end;;
-    print_decls_aux decls (append_nl;; append_nl)
+    print_decls_aux needs_curried decls (append_nl;; append_nl)
   end.
 
 Definition print_decls decls :=
-  print_decls_aux decls (ret tt).
+  print_decls_aux (fun _ => true) decls (ret tt).
 
 Class Preamble :=
   { top_preamble : list string;
@@ -827,7 +910,7 @@ Definition print_program : PrettyPrinter unit :=
   (* TODO: possibly, move to extraction (requires modifications of the correctness proof) *)
   let Σ := filter (fun '(kn,d) => negb (is_empty_type_decl d)) Σ in
 
-  ind_names <- print_decls_aux (filter (negb ∘ is_const) (List.rev Σ))
+  ind_names <- print_decls_aux (fun _ => true) (filter (negb ∘ is_const) (List.rev Σ))
                                (append_nl;; append_nl);;
 
   (* First print a structure that has the arena and all
@@ -881,7 +964,9 @@ Definition print_program : PrettyPrinter unit :=
   monad_append_join append_nl (map append program_preamble);;
 
   (* Finally print all constants *)
+  let curried := curried_constants in
   const_names <- print_decls_aux
+                   (fun kn => KernameSet.mem kn curried)
                    (map (MRProd.on_snd Ex.ConstantDecl) constants)
                    (append_nl;; append_nl);;
 

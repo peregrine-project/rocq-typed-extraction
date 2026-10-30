@@ -75,6 +75,7 @@ TopLevelFixes
 PrettyPrinterMonad
 Extraction0
 RustExtract
+FieldDCE
 PluginExtract
 
 G_typed_extraction

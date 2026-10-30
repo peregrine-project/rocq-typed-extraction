@@ -7,6 +7,7 @@ From MetaRocq.Erasure.Typed Require Import Utils.
 From TypedExtraction.Common Require Import PrettyPrinterMonad.
 From TypedExtraction.Rust Require Import Printing.
 From TypedExtraction.Rust Require Import RustExtract.
+From TypedExtraction.Rust Require FieldDCE.
 From MetaRocq.Common Require Import Kernames.
 From MetaRocq.Utils Require Import monad_utils.
 From Stdlib Require Import List.
@@ -155,6 +156,10 @@ Definition extract_lines
          (fst p)
          (KernameSet.singleton entry)
          without_deps;;
+  (* Prototype: remove unused constructor fields and the constants that only
+     they referred to (FieldDCE.v, not verified). *)
+  let is_remapped_ind kn := if remap_inductive remaps (mkInd kn 0) then true else false in
+  let Σ := FieldDCE.field_dce is_remapped_ind [entry] Σ in
   let p := print_program Σ remaps default_attrs in
   '(_, s) <- timed "Printing"%string (fun _ => (finish_print_lines p));;
   Ok s.
