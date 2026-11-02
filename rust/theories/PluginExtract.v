@@ -124,6 +124,18 @@ program_preamble := [
 "";
 "fn closure<TArg, TRet>(&'a self, F: impl Fn(TArg) -> TRet + 'a) -> &'a dyn Fn(TArg) -> TRet {";
 "  self.__alloc.alloc(F)";
+"}";
+"";
+"/* Bytes currently allocated in THIS arena.";
+"   Bumpalo never frees, so for a single-shot program (arena created once,";
+"   never reset) this is a lower bound on the process's total allocation";
+"   volume, not the true peak: numeric backends that route eliminator";
+"   predecessors through Box::leak (e.g. the GMP nat/positive/N/Z remap)";
+"   allocate outside this arena and are NOT counted here. Still useful as";
+"   a cheap, zero-dependency peak-memory proxy across benchmarks/backends";
+"   that stay entirely arena-resident. */";
+"fn peak_bytes(&self) -> usize {";
+"  self.__alloc.allocated_bytes()";
 "}" ] |}.
 
 #[local]
