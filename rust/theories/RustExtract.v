@@ -111,6 +111,47 @@ Definition base_ident (s : string) : string :=
 Definition is_plain_ident (s : string) : bool :=
   bytestring.String.eqb (base_ident s) s.
 
+(* The uses of the variable [k] in [t] on one evaluation path, saturated at 2:
+   the uses of a match are those of its scrutinee plus those of its most
+   demanding branch, and a closure or a local fixpoint counts once per
+   closure it builds, whatever its body does with the variable. *)
+Definition sat (n : nat) : nat := Nat.min 2 n.
+
+Fixpoint occ (k : nat) (t : term) {struct t} : nat :=
+  match t with
+  | tRel n => if Nat.eqb n k then 1 else 0
+  | tEvar _ l => sat (fold_right (fun a acc => occ k a + acc) 0 l)
+  | tLambda _ b => Nat.min 1 (occ (S k) b)
+  | tLetIn _ v b => sat (occ k v + occ (S k) b)
+  | tApp u v => sat (occ k u + occ k v)
+  | tConstruct _ _ args => sat (fold_right (fun a acc => occ k a + acc) 0 args)
+  | tCase _ d brs =>
+    sat (occ k d + fold_right (fun br acc => Nat.max (occ (#|fst br| + k) (snd br)) acc) 0 brs)
+  | tProj _ c => occ k c
+  | tFix mfix _ | tCoFix mfix _ =>
+    sat (fold_right (fun d acc => Nat.min 1 (occ (#|mfix| + k) (EAst.dbody d)) + acc) 0 mfix)
+  | tLazy c | tForce c => occ k c
+  | tPrim _ => 2
+  | _ => 0
+  end.
+
+(* In Rc mode a variable that [t] uses at most once on every path is moved,
+   not cloned: its context entry carries the mark [!].  Rust's move checker
+   checks each printed program for a use after a move. *)
+Definition movable (k : nat) (t : term) : bool := Nat.leb (occ k t) 1.
+
+Definition is_moved (s : string) : bool :=
+  match s with
+  | bytestring.String.String c _ => Byte.eqb c "!"%byte
+  | _ => false
+  end.
+
+Definition unmark (s : string) : string :=
+  match s with
+  | bytestring.String.String c r => if Byte.eqb c "!"%byte then r else s
+  | _ => s
+  end.
+
 Section FixEnv.
 Context (Σ : Ex.global_env).
 Context (remaps : remaps).
@@ -129,6 +170,11 @@ Definition is_rc : bool :=
   | RcMode => true
   | ArenaMode => false
   end.
+
+(* The context entry of a variable bound with body [t] at index [k]: marked as
+   moved when, in Rc mode, [t] uses it at most once on every path. *)
+Definition mark_entry (k : nat) (t : term) (x : string) : string :=
+  if andb is_rc (movable k t) then "!" ++ x else x.
 
 (* The bound on each type parameter of a function *)
 Definition ty_param_bound : string :=
@@ -260,8 +306,8 @@ Import BasicAst.
 Definition fresh_ident (name : name) (Γ : list ident) : PrettyPrinter ident :=
   used_names <- get_used_names;;
   match name with
-  | nAnon => ret (fresh "x" (Γ ++ used_names))
-  | nNamed name => ret (fresh (clean_local_ident name) (Γ ++ used_names))
+  | nAnon => ret (fresh "x" (map unmark Γ ++ used_names))
+  | nNamed name => ret (fresh (clean_local_ident name) (map unmark Γ ++ used_names))
   end.
 
 Definition fresh_ty_arg_name (name : name) (Γ : list ident) : PrettyPrinter ident :=
@@ -506,19 +552,39 @@ Section print_term.
     let rem := remap_inductive remaps ind in
     (* In Rc mode a match on an extracted inductive borrows the [Rc] and the
        branch clones the fields it binds *)
-    let borrow := match rem with
+    let rc_ind := match rem with
                   | Some _ => false
                   | None => is_rc
                   end in
+    (* A scrutinee that is a moved variable is matched by value: [__own] takes
+       the cell, or a shallow copy when it is shared, and the branch owns the
+       fields.  Otherwise the match borrows the cell. *)
+    let own := match discr with
+               | tRel n => match nth_error Γ n with
+                           | Some name => andb rc_ind (is_moved name)
+                           | None => false
+                           end
+               | _ => false
+               end in
+    let borrow := andb rc_ind (negb own) in
 
     append "match ";;
-    (if borrow then
+    (if own then
+       match discr with
+       | tRel n =>
+         match nth_error Γ n with
+         | Some name => append ("__own(" ++ unmark name ++ ")")
+         | None => printer_fail ("unbound tRel " ++ string_of_nat n)
+         end
+       | _ => printer_fail "unreachable"
+       end
+     else if borrow then
        append "__borrow(&";;
        match discr with
        | tRel n =>
          match nth_error Γ n with
          | Some name =>
-           if is_plain_ident name then append name else print_term Γ discr
+           if is_plain_ident name then append (unmark name) else print_term Γ discr
          | None => printer_fail ("unbound tRel " ++ string_of_nat n)
          end
        | _ =>
@@ -552,7 +618,7 @@ Section print_term.
            append s
 
          | None =>
-           append "&";;
+           (if own then ret tt else append "&");;
            print_ind ind;;
            append "::";;
            append (clean_global_ident ctor_name)
@@ -571,17 +637,22 @@ Section print_term.
               let nextra := if rem then npars else S npars in
               let extra := List.repeat "_" nextra in
               let bound := rev args in
+              let nb := #|bound| in
               let pats := if borrow then map (fun a => "ref " ^ a) bound else bound in
               let args := (extra ++ pats)%list in
               print_parenthesized (0 <? #|args|)%nat (append_join ", " args);;
               append " => {";;
               append_nl ;;
+              (* a borrowed field the branch uses is cloned; one it does not
+                 use stays a reference *)
               (if borrow then
                  monad_append_concat
-                   (map (fun a => append ("let " ^ a ^ " = Clone::clone(" ^ a ^ ");");;
-                                  append_nl) bound)
+                   (mapi (fun i a =>
+                            if Nat.eqb (occ (nb - 1 - i) t) 0 then ret tt
+                            else append ("let " ^ a ^ " = Clone::clone(" ^ a ^ ");");; append_nl) bound)
                else ret tt);;
-              print_term Γ t
+              let marked := mapi (fun i a => mark_entry (nb - 1 - i) t a) bound in
+              print_term (List.rev marked ++ skipn nb Γ)%list t
             | name :: bctx0 =>
               name <- fresh_ident name Γ;;
               print_branch bctx0 (name :: args) (name :: Γ)
@@ -654,6 +725,7 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
     match nth_error Γ n with
     | Some name =>
       if is_rc then
+        if is_moved name then append (unmark name) else
         (* A fixpoint entry [f.get().unwrap()] is already a reference *)
         append ("Clone::clone(" ++ (if is_plain_ident name then "&" else "") ++ name ++ ")")
       else
@@ -668,7 +740,8 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
     push_indent col;;
     (* In Rc mode the [move] closure takes its own clone of each captured
        variable, so that the variable stays available outside *)
-    let caps := if is_rc then lambda_captures Γ t else [] in
+    let caps := if is_rc then lambda_captures (map (fun e => if is_moved e then "" else e) Γ) t else [] in
+    let caps := filter (fun c => negb (bytestring.String.eqb c "")) caps in
     (match caps with
      | [] => ret tt
      | _ => append ("{ " ++ String.concat ""
@@ -678,7 +751,7 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
 
     push_indent (col + indent_size);;
     append_nl;;
-    let Γ := name :: Γ in
+    let Γ := mark_entry 0 t name :: map unmark Γ in
     print_term Γ t;;
     pop_indent;;
     append_nl;;
@@ -710,7 +783,7 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
 
     append_nl;;
 
-    print_term (name :: Γ) body;;
+    print_term (mark_entry 0 body name :: Γ) body;;
     pop_indent
 
   | tApp head arg =>
@@ -877,7 +950,14 @@ Definition print_constant
            na <- fresh_ident na Γ;;
            append (", " ++ na ++ ": ");;
            print_type Γty dom;;
-           print_top (na :: Γ) body cod
+           (* the parameters are the leading lambdas this loop peels, not closures *)
+           let occ_top := fix occ_top k t ty :=
+                 match t, ty with
+                 | tLambda _ b, TArr _ cod => occ_top (S k) b cod
+                 | _, _ => occ k t
+                 end in
+           let na' := if andb is_rc (Nat.leb (occ_top 0 body cod) 1) then "!" ++ na else na in
+           print_top (na' :: Γ) body cod
          | _, _ =>
            append ") -> ";;
            print_type Γty ty;;
