@@ -69,31 +69,31 @@ Fixpoint free_rels (k : nat) (t : term) {struct t} : list nat :=
     (fix go (l : list term) : list nat :=
        match l with
        | [] => []
-       | t :: l => free_rels k t ++ go l
+       | t :: l => List.app (free_rels k t) (go l)
        end) l
   | tLambda _ b => free_rels (S k) b
-  | tLetIn _ v b => free_rels k v ++ free_rels (S k) b
-  | tApp u v => free_rels k u ++ free_rels k v
+  | tLetIn _ v b => List.app (free_rels k v) (free_rels (S k) b)
+  | tApp u v => List.app (free_rels k u) (free_rels k v)
   | tConstruct _ _ args =>
     (fix go (l : list term) : list nat :=
        match l with
        | [] => []
-       | t :: l => free_rels k t ++ go l
+       | t :: l => List.app (free_rels k t) (go l)
        end) args
   | tCase _ d brs =>
-    free_rels k d ++
-    (fix go (l : list (list BasicAst.name * term)) : list nat :=
+    List.app (free_rels k d)
+    ((fix go (l : list (list BasicAst.name * term)) : list nat :=
        match l with
        | [] => []
-       | (ctx, b) :: l => free_rels (#|ctx| + k) b ++ go l
-       end) brs
+       | (ctx, b) :: l => List.app (free_rels (#|ctx| + k) b) (go l)
+       end) brs)
   | tProj _ c => free_rels k c
   | tFix mfix _
   | tCoFix mfix _ =>
     (fix go (l : list (EAst.def term)) : list nat :=
        match l with
        | [] => []
-       | d :: l => free_rels (#|mfix| + k) (EAst.dbody d) ++ go l
+       | d :: l => List.app (free_rels (#|mfix| + k) (EAst.dbody d)) (go l)
        end) mfix
   | tLazy t
   | tForce t => free_rels k t
