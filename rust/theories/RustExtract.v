@@ -50,6 +50,67 @@ Local Definition push_indent (n : nat) : PrettyPrinter unit :=
 
 Local Notation "a ^ b" := (a ++ b).
 
+(* Memory management of the printed program.  [ArenaMode] allocates every value
+   and closure in a bumpalo arena owned by [Program] and passes them as [&'a]
+   references, which are [Copy]; nothing is freed before the arena is dropped.
+   [RcMode] passes values as [Rc<..>] and closures as [Rc<dyn Fn ..>]; every
+   use of a variable clones it (one reference-count increment), a match borrows
+   its scrutinee and clones the fields it binds, and a closure clones the free
+   variables it captures.  The printed term helpers [__mk], [__borrow] and
+   [__app] and the [closure] method are defined by the preamble. *)
+Inductive rust_memory_mode := ArenaMode | RcMode.
+
+(* The de Bruijn indices of the variables free in [t] under [k] binders,
+   relative to the outside of those binders, with repetitions. *)
+Fixpoint free_rels (k : nat) (t : term) {struct t} : list nat :=
+  match t with
+  | tRel n => if (k <=? n)%nat then [n - k] else []
+  | tEvar _ l =>
+    (fix go (l : list term) : list nat :=
+       match l with
+       | [] => []
+       | t :: l => free_rels k t ++ go l
+       end) l
+  | tLambda _ b => free_rels (S k) b
+  | tLetIn _ v b => free_rels k v ++ free_rels (S k) b
+  | tApp u v => free_rels k u ++ free_rels k v
+  | tConstruct _ _ args =>
+    (fix go (l : list term) : list nat :=
+       match l with
+       | [] => []
+       | t :: l => free_rels k t ++ go l
+       end) args
+  | tCase _ d brs =>
+    free_rels k d ++
+    (fix go (l : list (list BasicAst.name * term)) : list nat :=
+       match l with
+       | [] => []
+       | (ctx, b) :: l => free_rels (#|ctx| + k) b ++ go l
+       end) brs
+  | tProj _ c => free_rels k c
+  | tFix mfix _
+  | tCoFix mfix _ =>
+    (fix go (l : list (EAst.def term)) : list nat :=
+       match l with
+       | [] => []
+       | d :: l => free_rels (#|mfix| + k) (EAst.dbody d) ++ go l
+       end) mfix
+  | tLazy t
+  | tForce t => free_rels k t
+  | _ => []
+  end.
+
+(* A context entry is a variable name, or, for a fixpoint cell, an expression
+   [f.get().unwrap()] reading the cell [f]; [base_ident] returns the variable. *)
+Definition base_ident (s : string) : string :=
+  match str_split "." s with
+  | x :: _ => x
+  | [] => s
+  end.
+
+Definition is_plain_ident (s : string) : bool :=
+  bytestring.String.eqb (base_ident s) s.
+
 Section FixEnv.
 Context (Σ : Ex.global_env).
 Context (remaps : remaps).
@@ -58,9 +119,20 @@ Class RustPrintConfig :=
   { term_box_symbol : string;
     type_box_symbol : string;
     any_type_symbol : string;
-    print_full_names : bool (* use fully-qualified names as identifiers to avoid name clashes *)}.
+    print_full_names : bool (* use fully-qualified names as identifiers to avoid name clashes *);
+    memory_mode : rust_memory_mode }.
 
 Context `{RustPrintConfig}.
+
+Definition is_rc : bool :=
+  match memory_mode with
+  | RcMode => true
+  | ArenaMode => false
+  end.
+
+(* The bound on each type parameter of a function *)
+Definition ty_param_bound : string :=
+  if is_rc then ": Clone + 'a" else ": Copy".
 
 Import Kernames.
 
@@ -210,10 +282,17 @@ Fixpoint print_type_aux (Γ : list ident) (t : box_type) (args : list (PrettyPri
   | TBox => append type_box_symbol
   | TAny => append any_type_symbol
   | TArr dom cod =>
-    append "&'a dyn Fn(";;
-    print_type_aux Γ dom [];;
-    append ") -> ";;
-    print_type_aux Γ cod []
+    if is_rc then
+      append "Rc<dyn Fn(";;
+      print_type_aux Γ dom [];;
+      append ") -> ";;
+      print_type_aux Γ cod [];;
+      append " + 'a>"
+    else
+      append "&'a dyn Fn(";;
+      print_type_aux Γ dom [];;
+      append ") -> ";;
+      print_type_aux Γ cod []
   | TApp head arg =>
     print_type_aux Γ head (print_type_aux Γ arg [] :: args)
   | TVar n =>
@@ -229,11 +308,12 @@ Fixpoint print_type_aux (Γ : list ident) (t : box_type) (args : list (PrettyPri
         (0 <? #|args|)%nat
         (monad_append_join (append ", ") args)
     else
-      append "&'a ";;
+      append (if is_rc then "Rc<" else "&'a ");;
       print_ind ind;;
       append "<";;
       monad_append_join (append ", ") (append "'a" :: args);;
-      append ">"
+      append ">";;
+      (if is_rc then append ">" else ret tt)
 
   | TConst name =>
     append ((get_ty_const_ident name) ++ "<");;
@@ -363,7 +443,7 @@ Definition print_constructor
 
     col <- get_indent;;
     push_indent (col + indent_size);;
-    append "self.alloc(";;
+    append (if is_rc then "__mk(" else "self.alloc(");;
     append_nl;;
     let head := print_ind ind;; append "::";; append (clean_global_ident ctor) in
     let final_args := append "PhantomData" :: args in
@@ -387,15 +467,34 @@ Definition print_const (kn : kername) (args : list (PrettyPrinter unit)) : Prett
   let head := append expr in
   let args_in_head := firstn num_inline_args args in
   let args_in_tail := skipn num_inline_args args in
+  (if is_rc then append (String.concat "" (repeat "__app(" #|args_in_tail|)) else ret tt);;
   print_app head args_in_head;;
   push_indent (head_col + indent_size);;
   let it_app a :=
-      append "(";;
+      append (if is_rc then "," else "(");;
       append_nl;;
       a;;
       append ")" in
   monad_append_concat (map it_app args_in_tail);;
   pop_indent.
+
+Definition needs_block (t : term) : bool :=
+  match t with
+  | tLetIn _ _ _
+  | tFix _ _ => true
+  | _ => false
+  end.
+
+(* The variables that a closure [tLambda na body] in context [Γ] captures; in
+   Rc mode they are cloned before the [move] closure takes them.  A fixpoint
+   variable is captured as its cell.  The entries of [Γ] are distinct, so
+   distinct indices give distinct variables. *)
+Definition lambda_captures (Γ : list ident) (body : term) : list ident :=
+  flat_map (fun i => match nth_error Γ i with
+                     | Some na => [base_ident na]
+                     | None => []
+                     end)
+           (nodup Nat.eq_dec (free_rels 1 body)).
 
 Section print_term.
   Context (print_term : list ident -> term -> PrettyPrinter unit).
@@ -404,12 +503,36 @@ Section print_term.
     col <- get_indent;;
     push_indent col;;
 
+    let rem := remap_inductive remaps ind in
+    (* In Rc mode a match on an extracted inductive borrows the [Rc] and the
+       branch clones the fields it binds *)
+    let borrow := match rem with
+                  | Some _ => false
+                  | None => is_rc
+                  end in
+
     append "match ";;
-    print_term Γ discr;;
+    (if borrow then
+       append "__borrow(&";;
+       match discr with
+       | tRel n =>
+         match nth_error Γ n with
+         | Some name =>
+           if is_plain_ident name then append name else print_term Γ discr
+         | None => printer_fail ("unbound tRel " ++ string_of_nat n)
+         end
+       | _ =>
+         if needs_block discr then
+           append "{ ";; print_term Γ discr;; append " }"
+         else
+           print_term Γ discr
+       end;;
+       append ")"
+     else
+       print_term Γ discr);;
     append " {";;
 
     oib <- wrap_result (lookup_ind_decl ind) id;;
-    let rem := remap_inductive remaps ind in
 
     push_indent (col + indent_size);;
     (fix print_cases
@@ -447,10 +570,17 @@ Section print_term.
             lifetimes. That gives another underscores. *)
               let nextra := if rem then npars else S npars in
               let extra := List.repeat "_" nextra in
-              let args := (extra ++ (rev args))%list in
+              let bound := rev args in
+              let pats := if borrow then map (fun a => "ref " ^ a) bound else bound in
+              let args := (extra ++ pats)%list in
               print_parenthesized (0 <? #|args|)%nat (append_join ", " args);;
               append " => {";;
               append_nl ;;
+              (if borrow then
+                 monad_append_concat
+                   (map (fun a => append ("let " ^ a ^ " = Clone::clone(" ^ a ^ ");");;
+                                  append_nl) bound)
+               else ret tt);;
               print_term Γ t
             | name :: bctx0 =>
               name <- fresh_ident name Γ;;
@@ -517,19 +647,17 @@ Section print_term.
     pop_indent.
 End print_term.
 
-Definition needs_block (t : term) : bool :=
-  match t with
-  | tLetIn _ _ _
-  | tFix _ _ => true
-  | _ => false
-  end.
-
 Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit :=
   match t with
   | tBox => append term_box_symbol
   | tRel n =>
     match nth_error Γ n with
-    | Some name => append name
+    | Some name =>
+      if is_rc then
+        (* A fixpoint entry [f.get().unwrap()] is already a reference *)
+        append ("Clone::clone(" ++ (if is_plain_ident name then "&" else "") ++ name ++ ")")
+      else
+        append name
     | None => printer_fail ("unbound tRel " ++ string_of_nat n)
     end
   | tVar ident => printer_fail ("tVar " ++ ident)
@@ -538,6 +666,14 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
     name <- fresh_ident name Γ;;
     col <- get_indent;;
     push_indent col;;
+    (* In Rc mode the [move] closure takes its own clone of each captured
+       variable, so that the variable stays available outside *)
+    let caps := if is_rc then lambda_captures Γ t else [] in
+    (match caps with
+     | [] => ret tt
+     | _ => append ("{ " ++ String.concat ""
+                      (map (fun c => "let " ++ c ++ " = Clone::clone(&" ++ c ++ "); ") caps))
+     end);;
     append ("self.closure(move |" ++ name ++ "| {");;
 
     push_indent (col + indent_size);;
@@ -547,6 +683,10 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
     pop_indent;;
     append_nl;;
     append "})";;
+    (match caps with
+     | [] => ret tt
+     | _ => append " }"
+     end);;
     pop_indent
 
   | tLetIn na val body =>
@@ -594,6 +734,14 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
        | _ =>
          (* For other heads we might need to guide type inference by repeatedly
             applying a hint function *)
+         if is_rc then
+           (* [__app(f, a)] calls the [Rc<dyn Fn>] [f] and fixes its type *)
+           append (String.concat "" (repeat "__app(" #|args_printed|));;
+           (if needs_block head then append "{ " else ret tt);;
+           print_term Γ head;;
+           (if needs_block head then append " }" else ret tt);;
+           monad_append_concat (map (fun a => append ", ";; a;; append ")") args_printed)
+         else
          append (String.concat "" (repeat "hint_app(" #|args_printed|));;
          (if needs_block head then append "{ " else ret tt);;
          print_term Γ head;;
@@ -651,7 +799,10 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
                first closure or find a better way to handle this. *)
             na <- fresh_ident (EAst.dname d) Γ;;
             push_use na;;
-            append ("let " ++ na ++ " = self.alloc(std::cell::Cell::new(None));");;
+            (* In Rc mode the cell is an [Rc<OnceCell<..>>] that each closure
+               clones; the closures and the cell form a cycle, which leaks *)
+            append ("let " ++ na ++ (if is_rc then " = Rc::new(std::cell::OnceCell::new());"
+                                     else " = self.alloc(std::cell::Cell::new(None));"));;
             append_nl;;
             ret ((bytestring.String.append na ".get().unwrap()") :: Γ, na :: cells))
          defs (Γ, []);;
@@ -661,11 +812,11 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
     (* Print closures. *)
     monad_fold_left
       (fun _ '(print_def, cell) =>
-         append (cell ++ ".set(Some(");;
+         append (if is_rc then "let _ = " ++ cell ++ ".set(" else cell ++ ".set(Some(");;
          push_indent (col + indent_size);;
          append_nl;;
          print_def;;
-         append "));";;
+         append (if is_rc then ");" else "));");;
          pop_indent;;
          append_nl)
       (combine
@@ -673,7 +824,10 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
          cells)
       tt;;
 
-    append ((nth i cells "") ++ ".get().unwrap()");;
+    (if is_rc then
+       append ("Clone::clone(" ++ (nth i cells "") ++ ".get().unwrap())")
+     else
+       append ((nth i cells "") ++ ".get().unwrap()"));;
     pop_indent
 
   | tProj (mkProjection ind pars c) t =>
@@ -710,7 +864,7 @@ Definition print_constant
       append ("fn " ++ rname);;
       print_parenthesized_with
         "<" ">" (0 <? #|Γty|)%nat
-        (append_join ", " (map (fun na => na ++ ": Copy") Γty));;
+        (append_join ", " (map (fun na => na ++ ty_param_bound) Γty));;
       append "(&'a self";;
 
       (* Native recursion: rewrite a single fixpoint's self-reference to a
@@ -748,7 +902,7 @@ Definition print_constant
      append ("fn " ++ rname ++ "__curried");;
      print_parenthesized_with
        "<" ">" (0 <? #|Γty|)%nat
-       (append_join ", " (map (fun na => na ++ ": Copy") Γty));;
+       (append_join ", " (map (fun na => na ++ ty_param_bound) Γty));;
      append "(&'a self) -> ";;
      print_type Γty ty;;
      append " {";;
@@ -940,8 +1094,10 @@ Definition print_program : PrettyPrinter unit :=
   push_indent (sig_col + indent_size);;
 
   append "struct Program {";;
-  append_nl;;
-  append "__alloc: bumpalo::Bump,";;
+  (* In Rc mode the program has no state *)
+  (if is_rc then ret tt else
+     append_nl;;
+     append "__alloc: bumpalo::Bump,");;
 
   pop_indent;;
   append_nl;;
@@ -961,8 +1117,9 @@ Definition print_program : PrettyPrinter unit :=
   append "Program {";;
 
   push_indent (sig_col + 2*indent_size);;
-  append_nl;;
-  append "__alloc: bumpalo::Bump::new(),";;
+  (if is_rc then ret tt else
+     append_nl;;
+     append "__alloc: bumpalo::Bump::new(),");;
 
   pop_indent;;
   append_nl;;
