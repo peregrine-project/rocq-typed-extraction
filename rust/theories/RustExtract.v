@@ -222,13 +222,25 @@ Definition clean_global_ident (s : string) : string :=
 
 (* Get identifier for a global constant function given its kername, without
    taking remappings into account *)
+(* A keyword is sanitized to a raw identifier [r#kw]; a module prefix makes it an
+   ordinary identifier, and [Mod_r#kw] would not be one. *)
+Definition strip_raw (s : string) : string :=
+  match s with
+  | bytestring.String.String c1 (bytestring.String.String c2 r) =>
+    if andb (Byte.eqb c1 "r"%byte) (Byte.eqb c2 "#"%byte) then r else s
+  | _ => s
+  end.
+
+Definition full_name (kn : kername) : string :=
+  string_of_kername (fst kn, strip_raw (snd kn)).
+
 Definition const_global_ident_of_kername (kn : kername) :=
-  clean_global_ident (if print_full_names then (string_of_kername kn) else (snd kn)).
+  clean_global_ident (if print_full_names then full_name kn else (snd kn)).
 
 (* Get identifier for a global constant meant to be used as a type, without
    taking remappings into account. This is also used for [inductive]. *)
 Definition ty_const_global_ident_of_kername (kn : kername) :=
-  capitalize (clean_global_ident (if print_full_names then string_of_kername kn else (snd kn))).
+  capitalize (clean_global_ident (if print_full_names then full_name kn else (snd kn))).
 
 (* Get identifier for a global type alias taking remappings into account *)
 Definition get_ty_const_ident (name : kername) : _ :=
