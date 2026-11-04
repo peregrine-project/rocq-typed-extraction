@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Rust: `memory_mode` field of `RustPrintConfig`; `RcMode` prints reference-counted values (`Rc`) instead of arena references (`ArenaMode`, unchanged output)
 
 ## [0.2.0] - 2026-02-25
 - Support Rocq 9.1
