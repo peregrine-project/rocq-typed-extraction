@@ -20,7 +20,8 @@ Local Instance RustConfig : RustPrintConfig :=
      type_box_symbol := "()";
      any_type_symbol := "()";
      print_full_names := false;
-     memory_mode := ArenaMode |}.
+     memory_mode := ArenaMode;
+     rc_borrowed := fun _ _ => false |}.
 
 Definition default_attrs : ind_attr_map := fun _ => "#[derive(Debug, Clone)]".
 

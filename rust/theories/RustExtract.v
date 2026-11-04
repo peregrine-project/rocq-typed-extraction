@@ -146,9 +146,17 @@ Definition is_moved (s : string) : bool :=
   | _ => false
   end.
 
+(* A borrowed parameter's entry carries the mark [*]: the variable is a reference. *)
+Definition is_ref (s : string) : bool :=
+  match s with
+  | bytestring.String.String c _ => Byte.eqb c "*"%byte
+  | _ => false
+  end.
+
 Definition unmark (s : string) : string :=
   match s with
-  | bytestring.String.String c r => if Byte.eqb c "!"%byte then r else s
+  | bytestring.String.String c r =>
+    if orb (Byte.eqb c "!"%byte) (Byte.eqb c "*"%byte) then r else s
   | _ => s
   end.
 
@@ -161,7 +169,9 @@ Class RustPrintConfig :=
     type_box_symbol : string;
     any_type_symbol : string;
     print_full_names : bool (* use fully-qualified names as identifiers to avoid name clashes *);
-    memory_mode : rust_memory_mode }.
+    memory_mode : rust_memory_mode;
+    (* In Rc mode: parameter [j] of constant [kn] is passed as a reference [&Rc<..>] *)
+    rc_borrowed : Kernames.kername -> nat -> bool }.
 
 Context `{RustPrintConfig}.
 
@@ -403,6 +413,8 @@ Fixpoint nrb_is_eta_args (doms : list box_type) (i : nat) (args : list term) : b
    eta-wrapped fix whose body captures an outer variable, or a fix applied to
    anything else) is returned unchanged and handled by [print_term]'s [tFix]
    closure-cell case.  [doms] lists the domain types of the outer lambdas. *)
+(* The eta case below is not specific to Rust (the typed Koka printer of Peregrine
+   has its own); it may belong in the middle end in the future. *)
 Definition native_rec_body (doms : list box_type) (kn : kername) (body : term) : term :=
   let fix strip (acc : list name) (b : term) : list name * term :=
     match b with
@@ -579,15 +591,18 @@ Section print_term.
        | _ => printer_fail "unreachable"
        end
      else if borrow then
-       append "__borrow(&";;
+       append "__borrow(";;
        match discr with
        | tRel n =>
          match nth_error Γ n with
          | Some name =>
-           if is_plain_ident name then append (unmark name) else print_term Γ discr
+           if is_ref name then append (unmark name)
+           else if is_plain_ident name then append ("&" ++ unmark name)
+           else (append "&";; print_term Γ discr)
          | None => printer_fail ("unbound tRel " ++ string_of_nat n)
          end
        | _ =>
+         append "&";;
          if needs_block discr then
            append "{ ";; print_term Γ discr;; append " }"
          else
@@ -718,6 +733,23 @@ Section print_term.
     pop_indent.
 End print_term.
 
+(* An argument at a borrowed position: a variable is passed by reference without
+   a clone (a borrowed parameter or a fixpoint cell already is a reference), any
+   other argument is a temporary that lives for the call. *)
+Definition borrowed_arg (Γ : list ident) (a : term) (printed : PrettyPrinter unit)
+  : PrettyPrinter unit :=
+  match a with
+  | tRel n =>
+    match nth_error Γ n with
+    | Some e =>
+      if is_ref e then append (unmark e)
+      else if is_plain_ident e then append ("&" ++ unmark e)
+      else append e
+    | None => printer_fail ("unbound tRel " ++ string_of_nat n)
+    end
+  | _ => append "&(";; printed;; append ")"
+  end.
+
 Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit :=
   match t with
   | tBox => append term_box_symbol
@@ -726,6 +758,7 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
     | Some name =>
       if is_rc then
         if is_moved name then append (unmark name) else
+        if is_ref name then append ("Clone::clone(" ++ unmark name ++ ")") else
         (* A fixpoint entry [f.get().unwrap()] is already a reference *)
         append ("Clone::clone(" ++ (if is_plain_ident name then "&" else "") ++ name ++ ")")
       else
@@ -745,7 +778,9 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
     (match caps with
      | [] => ret tt
      | _ => append ("{ " ++ String.concat ""
-                      (map (fun c => "let " ++ c ++ " = Clone::clone(&" ++ c ++ "); ") caps))
+                      (map (fun c => if is_ref c
+                                     then "let " ++ unmark c ++ " = Clone::clone(" ++ unmark c ++ "); "
+                                     else "let " ++ c ++ " = Clone::clone(&" ++ c ++ "); ") caps))
      end);;
     append ("self.closure(move |" ++ name ++ "| {");;
 
@@ -788,21 +823,27 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
 
   | tApp head arg =>
 
-    (fix f head args_printed {struct head} :=
+    (fix f head args_printed args_borrowed {struct head} :=
        match head with
        | tApp head arg =>
          let printed_arg :=
              (if needs_block arg then append "{ " else ret tt);;
              print_term Γ arg;;
              if needs_block arg then append " }" else ret tt in
-         f head (printed_arg :: args_printed)
+         f head (printed_arg :: args_printed) (borrowed_arg Γ arg printed_arg :: args_borrowed)
 
        | tConstruct ind i [] => print_constructor ind i args_printed
        | tConstruct ind i (_ :: _) =>
            printer_fail ("Costructors-as-blocks is not supported: "
                          ^ (string_of_kername ind.(inductive_mind)))
 
-       | tConst kn => print_const kn args_printed
+       | tConst kn =>
+         (* a saturated call passes a borrowed position by reference *)
+         n <- get_num_inline_args kn;;
+         let use_ref j := andb is_rc (andb (Nat.leb n #|args_printed|)
+                                           (andb (Nat.ltb j n) (rc_borrowed kn j))) in
+         print_const kn (mapi (fun j '(p, b) => if use_ref j then b else p)
+                              (combine args_printed args_borrowed))
 
        | _ =>
          (* For other heads we might need to guide type inference by repeatedly
@@ -828,6 +869,10 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
                     append "{ ";; print_term Γ arg;; append " }"
                   else
                     print_term Γ arg]
+                 [borrowed_arg Γ arg (if needs_block arg then
+                                        append "{ ";; print_term Γ arg;; append " }"
+                                      else
+                                        print_term Γ arg)]
 
   | tConst kn => print_const kn []
   | tConstruct ind i [] => print_constructor ind i []
@@ -944,11 +989,12 @@ Definition print_constant
          direct call to this constant, so recursion compiles to a native
          recursive [fn] rather than a heap [Cell<Option<&dyn Fn>>]. *)
       let body := native_rec_body (fst (decompose_arr ty)) kn body in
-      (fix print_top Γ body ty :=
+      (fix print_top j Γ body ty :=
          match body, ty with
          | tLambda na body, TArr dom cod =>
            na <- fresh_ident na Γ;;
-           append (", " ++ na ++ ": ");;
+           let brw := andb is_rc (rc_borrowed kn j) in
+           append (", " ++ na ++ (if brw then ": &" else ": "));;
            print_type Γty dom;;
            (* the parameters are the leading lambdas this loop peels, not closures *)
            let occ_top := fix occ_top k t ty :=
@@ -956,8 +1002,9 @@ Definition print_constant
                  | tLambda _ b, TArr _ cod => occ_top (S k) b cod
                  | _, _ => occ k t
                  end in
-           let na' := if andb is_rc (Nat.leb (occ_top 0 body cod) 1) then "!" ++ na else na in
-           print_top (na' :: Γ) body cod
+           let na' := if brw then "*" ++ na
+                      else if andb is_rc (Nat.leb (occ_top 0 body cod) 1) then "!" ++ na else na in
+           print_top (S j) (na' :: Γ) body cod
          | _, _ =>
            append ") -> ";;
            print_type Γty ty;;
@@ -972,7 +1019,7 @@ Definition print_constant
            pop_indent;;
            append_nl;;
            append "}"
-         end) [] body ty
+         end) 0 [] body ty
   end;;
 
   (* Print curried version if there were inlined args *)
