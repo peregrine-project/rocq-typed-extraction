@@ -87,3 +87,58 @@ Proof.
   pose proof (occ_sound k t n Hu) as H.
   unfold sat in H. lia.
 Qed.
+
+(** The per-branch rule: a variable that [occ] does not find movable in a whole
+    term may still be moved in one branch, when the code before that branch does
+    not use it.  [reaches k t k' t' n] is an evaluation path from [t] to the term
+    [t'] in tail position, [k'] being the index of the variable there, on which [n]
+    uses happen in all, those before [t'] being excluded by [occ]. *)
+Inductive reaches : nat -> term -> nat -> term -> nat -> Prop :=
+| reaches_here k t n : uses k t n -> reaches k t k t n
+| reaches_letin k na v b k' t' m n :
+    occ k v = 0 -> uses k v m -> reaches (S k) b k' t' n ->
+    reaches k (tLetIn na v b) k' t' (m + n)
+| reaches_case k ci d brs br k' t' m n :
+    occ k d = 0 -> uses k d m -> In br brs ->
+    reaches (#|fst br| + k) (snd br) k' t' n ->
+    reaches k (tCase ci d brs) k' t' (m + n).
+
+(** Such a path is a path of the whole term. *)
+Lemma reaches_uses k t k' t' n : reaches k t k' t' n -> uses k t n.
+Proof.
+  induction 1.
+  - assumption.
+  - now constructor.
+  - econstructor; eassumption.
+Qed.
+
+Lemma occ_zero_no_use k t n : occ k t = 0 -> uses k t n -> n = 0.
+Proof.
+  intros H Hu. pose proof (occ_sound k t n Hu) as Hs. unfold sat in Hs. lia.
+Qed.
+
+Theorem moved_in_branch_at_most_once k t k' t' n :
+  reaches k t k' t' n -> movable k' t' = true -> n <= 1.
+Proof.
+  induction 1; intros Hm.
+  - eapply movable_at_most_once; eassumption.
+  - pose proof (occ_zero_no_use _ _ _ H H0). specialize (IHreaches Hm). lia.
+  - pose proof (occ_zero_no_use _ _ _ H H0). specialize (IHreaches Hm). lia.
+Qed.
+
+(** The rule applies where [movable] does not, as in [divmod]: the first branch uses
+    the variable twice, so the whole match is not movable, and the second once. *)
+Example per_branch_strictly_stronger ci :
+  let br0 : list BasicAst.name * term := ([], tApp (tRel 0) (tRel 0)) in
+  let br1 : list BasicAst.name * term := ([BasicAst.nAnon], tRel 1) in
+  let t := tCase ci (tRel 1) [br0; br1] in
+  movable 0 t = false /\ movable 1 (tRel 1) = true /\
+  reaches 0 t 1 (tRel 1) 1.
+Proof.
+  repeat split.
+  refine (reaches_case 0 ci _ _ ([BasicAst.nAnon], tRel 1) 1 (tRel 1) 0 1 _ _ _ _).
+  - reflexivity.
+  - apply uses_rel_neq. discriminate.
+  - cbn. tauto.
+  - cbn. apply reaches_here, uses_rel_eq.
+Qed.
