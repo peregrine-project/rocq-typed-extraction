@@ -425,7 +425,69 @@ Definition erased_result_arity (kn : kername) : option nat :=
   | None => None
   end.
 
-Definition print_const (kn : kername) (args : list (PrettyPrinter unit)) : PrettyPrinter unit :=
+Fixpoint mentions_tvar (i : nat) (t : box_type) : bool :=
+  match t with
+  | TVar n => (n =? i)%nat
+  | TArr a b | TApp a b => orb (mentions_tvar i a) (mentions_tvar i b)
+  | _ => false
+  end.
+
+Fixpoint ty_args (t : box_type) : list box_type :=
+  match t with
+  | TApp h a => (ty_args h ++ [a])%list
+  | _ => []
+  end.
+
+Definition ctor_field_types (ind : inductive) (c : nat) : list box_type :=
+  match Ex.lookup_env Σ (inductive_mind ind) with
+  | Some (Ex.InductiveDecl mib) =>
+    match nth_error (Ex.ind_bodies mib) (inductive_ind ind) with
+    | Some oib =>
+      match nth_error (Ex.ind_ctors oib) c with
+      | Some (_, fields, _) => map snd fields
+      | None => []
+      end
+    | None => []
+    end
+  | _ => []
+  end.
+
+(* Whether an argument of type [dom] lets rustc infer the type variable [i].  A
+   constructor application only does so through the type parameters that its own
+   fields mention: [Left 0] says nothing about [B] in [Either A B]. *)
+Definition determines_tvar (i : nat) (dom : box_type) (arg : term) : bool :=
+  andb (mentions_tvar i dom)
+  match EAstUtils.decompose_app arg with
+  | (tConstruct ind c _, _) =>
+    match ty_args dom with
+    | [] => true
+    | targs =>
+      let fields := ctor_field_types ind c in
+      existsb id (mapi (fun p targ => andb (mentions_tvar i targ) (existsb (mentions_tvar p) fields)) targs)
+    end
+  | _ => true
+  end.
+
+(* The type arguments of a call, printed only when rustc cannot infer one of them.
+   Erasure removed the explicit type argument, and a type variable that occurs
+   neither in the result type nor in what an argument determines has no effect on
+   the program, so any type does; [()] satisfies the [Copy] bound of the parameter. *)
+Definition call_turbofish (kn : kername) (args : list term) : string :=
+  match Ex.lookup_constant Σ kn, remap_constant remaps kn, remap_inline_constant remaps kn with
+  | Some cst, None, None =>
+    let '(tvars, ty) := Ex.cst_type cst in
+    let '(doms, cod) := decompose_arr ty in
+    let undetermined i :=
+        andb (negb (mentions_tvar i cod))
+             (negb (existsb (fun '(d, a) => determines_tvar i d a) (combine doms args))) in
+    let flags := mapi (fun i _ => undetermined i) tvars in
+    if orb (Nat.ltb #|args| #|doms|) (negb (existsb id flags)) then ""
+    else "::<" ++ String.concat ", " (map (fun u : bool => if u then "()" else "_") flags) ++ ">"
+  | _, _, _ => ""
+  end.
+
+Definition print_const_turbofish (turbofish : string) (kn : kername) (args : list (PrettyPrinter unit))
+  : PrettyPrinter unit :=
   num_inline_args <- get_num_inline_args kn;;
   let (expr, num_inline_args) :=
       if (#|args| <? num_inline_args)%nat then
@@ -434,7 +496,7 @@ Definition print_const (kn : kername) (args : list (PrettyPrinter unit)) : Prett
       else
         (match remap_inline_constant remaps kn with
          | Some s => s
-         | None => "self." ^ const_global_ident_of_kername kn
+         | None => "self." ^ const_global_ident_of_kername kn ^ turbofish
          end, num_inline_args) in
   head_col <- get_indent;;
   let head := append expr in
@@ -570,6 +632,8 @@ Section print_term.
     pop_indent.
 End print_term.
 
+Definition print_const := print_const_turbofish "".
+
 Definition needs_block (t : term) : bool :=
   match t with
   | tLetIn _ _ _
@@ -647,7 +711,8 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
          | Some n =>
            if (n <? #|args_printed|)%nat then print_const kn (firstn n args_printed)
            else print_const kn args_printed
-         | None => print_const kn args_printed
+         | None =>
+           print_const_turbofish (call_turbofish kn (snd (EAstUtils.decompose_app t))) kn args_printed
          end
 
        | tBox => append term_box_symbol
