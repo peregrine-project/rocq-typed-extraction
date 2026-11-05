@@ -30,6 +30,21 @@ Open Scope bs_scope.
 
 Local Definition indent_size := 2.
 
+(* Maximum leading indentation. Deeply nested terms (e.g. a long unary-nat
+   [S (S (... ))] spine) would otherwise accumulate O(depth^2) leading
+   whitespace, since each level indents [indent_size] beyond its parent. Rust
+   ignores whitespace outside tokens, so capping the indent only bounds the
+   generated-source size and leaves the program semantically identical. *)
+Local Definition max_indent := 40.
+
+(* Shadow [push_indent] within this Rust printer with a capped version, anchored
+   to the current nesting indent rather than the absolute column (via
+   [get_indent] at each use site below). Other printers over
+   [PrettyPrinterMonad] (e.g. Elm, whose output is indentation-sensitive) keep
+   the uncapped behaviour. *)
+Local Definition push_indent (n : nat) : PrettyPrinter unit :=
+  PrettyPrinterMonad.push_indent (Nat.min n max_indent).
+
 Local Notation "a ^ b" := (a ++ b).
 
 (* rustc must infer the type parameters of a generic function at each call. A
@@ -424,7 +439,7 @@ Definition get_num_inline_args (kn : kername) : PrettyPrinter nat :=
 Definition print_app
            (head : PrettyPrinter unit)
            (args : list (PrettyPrinter unit)) : PrettyPrinter unit :=
-  col <- get_current_line_length;;
+  col <- get_indent;;
   head;;
   push_indent (col + indent_size);;
   append "(";;
@@ -455,7 +470,7 @@ Definition print_constructor
                      ^ " for inductive "
                      ^ (string_of_inductive ind));;
 
-    col <- get_current_line_length;;
+    col <- get_indent;;
     push_indent (col + indent_size);;
     append "self.alloc(";;
     append_nl;;
@@ -477,7 +492,7 @@ Definition print_const (kn : kername) (args : list (PrettyPrinter unit)) : Prett
          | Some s => s
          | None => "self." ^ const_global_ident_of_kername kn
          end, num_inline_args) in
-  head_col <- get_current_line_length;;
+  head_col <- get_indent;;
   let head := append expr in
   let args_in_head := firstn num_inline_args args in
   let args_in_tail := skipn num_inline_args args in
@@ -495,7 +510,7 @@ Section print_term.
   Context (print_term : list ident -> term -> PrettyPrinter unit).
 
   Definition print_case Γ ind npars discr brs : PrettyPrinter unit :=
-    col <- get_current_line_length;;
+    col <- get_indent;;
     push_indent col;;
 
     append "match ";;
@@ -566,7 +581,7 @@ Section print_term.
     pop_indent.
 
   Definition print_remapped_case Γ ind discr brs eliminator : PrettyPrinter unit :=
-    col <- get_current_line_length;;
+    col <- get_indent;;
     push_indent col;;
 
     append (eliminator ^ "(");;
@@ -630,7 +645,7 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
   | tEvar _ _ => printer_fail "unexpected evar"
   | tLambda name t =>
     name <- fresh_ident name Γ;;
-    col <- get_current_line_length;;
+    col <- get_indent;;
     push_indent col;;
     append ("self.closure(move |" ++ name ++ "| {");;
 
@@ -645,7 +660,7 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
 
   | tLetIn na val body =>
     name <- fresh_ident na Γ;;
-    col <- get_current_line_length;;
+    col <- get_indent;;
 
     push_indent col;;
     append ("let " ++ name ++ " =");;
@@ -731,7 +746,7 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
        location and it is ready to use. It is complicated by the fact that fix points
        are also mutual and we must create many heap cells before assigning the closures,
        and each closure also needs its own clone of each cell. *)
-    col <- get_current_line_length;;
+    col <- get_indent;;
     push_indent col;;
 
     (* Generate names and allocate cells *)
@@ -786,7 +801,7 @@ Definition print_constant
 
   let rname := const_global_ident_of_kername kn in
 
-  name_col <- get_current_line_length;;
+  name_col <- get_indent;;
   push_indent name_col;;
 
   let (type_vars, ty) := type in
@@ -895,7 +910,7 @@ Definition print_ind_ctor_definition
 Definition print_mutual_inductive_body
            (kn : kername)
            (mib : Ex.mutual_inductive_body) : PrettyPrinter unit :=
-  col <- get_current_line_length;;
+  col <- get_indent;;
   push_indent col;;
 
   names <-
@@ -992,7 +1007,7 @@ Class Preamble :=
 Context `{Preamble}.
 
 Definition print_program_aux : PrettyPrinter unit :=
-  sig_col <- get_current_line_length;;
+  sig_col <- get_indent;;
   push_indent sig_col;;
 
   monad_append_join append_nl (map append top_preamble);;
