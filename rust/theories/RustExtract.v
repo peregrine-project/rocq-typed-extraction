@@ -411,6 +411,20 @@ Definition print_prim (p : EPrimitive.prim_val term) : PrettyPrinter unit :=
   | _ => printer_fail "Cannot handle Rocq primitive floats and arrays yet"
   end.
 
+(* A constant whose result type is erased, applied to more arguments than its type
+   has arrows, as the projection of an erased field is: the result is the box, and
+   the remaining arguments are terms of a total language, so they are dropped. *)
+Definition erased_result_arity (kn : kername) : option nat :=
+  match Ex.lookup_constant Σ kn with
+  | Some cst =>
+    let '(doms, cod) := decompose_arr (snd (Ex.cst_type cst)) in
+    match cod with
+    | TBox => Some #|doms|
+    | _ => None
+    end
+  | None => None
+  end.
+
 Definition print_const (kn : kername) (args : list (PrettyPrinter unit)) : PrettyPrinter unit :=
   num_inline_args <- get_num_inline_args kn;;
   let (expr, num_inline_args) :=
@@ -628,7 +642,15 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
            printer_fail ("Costructors-as-blocks is not supported: "
                          ^ (string_of_kername ind.(inductive_mind)))
 
-       | tConst kn => print_const kn args_printed
+       | tConst kn =>
+         match erased_result_arity kn with
+         | Some n =>
+           if (n <? #|args_printed|)%nat then print_const kn (firstn n args_printed)
+           else print_const kn args_printed
+         | None => print_const kn args_printed
+         end
+
+       | tBox => append term_box_symbol
 
        | _ =>
          (* For other heads we might need to guide type inference by repeatedly
