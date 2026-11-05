@@ -701,8 +701,8 @@ Section print_term.
     push_indent col;;
 
     let rem := remap_inductive remaps ind in
-    (* In Rc mode a match on an extracted inductive borrows the [Rc] and the
-       branch clones the fields it binds *)
+    (* In Rc mode a match on an extracted inductive borrows the [Rc], and the
+       branch holds references to the fields it binds *)
     let rc_ind := match rem with
                   | Some _ => false
                   | None => is_rc
@@ -799,15 +799,12 @@ Section print_term.
               print_parenthesized (0 <? #|args|)%nat (append_join ", " args);;
               append " => {";;
               append_nl ;;
-              (* a borrowed field the branch uses is cloned; one it does not
-                 use stays a reference *)
-              (if borrow then
-                 monad_append_concat
-                   (mapi (fun i a =>
-                            if Nat.eqb (occ (nb - 1 - i) t) 0 then ret tt
-                            else append ("let " ^ a ^ " = Clone::clone(" ^ a ^ ");");; append_nl) bound)
-               else ret tt);;
-              let marked := mapi (fun i a => mark_entry (nb - 1 - i) t a) bound in
+              (* a borrowed field stays a reference: a use that needs ownership
+                 clones it, and a use as a borrowed argument or a scrutinee does
+                 not touch its reference count *)
+              let marked := if borrow
+                            then map (fun a => "*" ++ a) bound
+                            else mapi (fun i a => mark_entry (nb - 1 - i) t a) bound in
               let Γ' := (List.rev marked ++ skipn nb Γ)%list in
               (if family then
                  append "__cast({ ";; print_term Γ' t;; append " })"
