@@ -604,19 +604,38 @@ Definition ctor_field_types (ind : inductive) (c : nat) : list box_type :=
 
 (* Whether an argument of type [dom] lets rustc infer the type variable [i].  A
    constructor application only does so through the type parameters that its own
-   fields mention: [Left 0] says nothing about [B] in [Either A B]. *)
-Definition determines_tvar (i : nat) (dom : box_type) (arg : term) : bool :=
+   fields mention: [Left 0] says nothing about [B] in [Either A B], and
+   [Left (Left 0)] nothing about it in [Either (Either A B) C], which is why a field
+   whose type is a parameter is followed into the argument at that field.  The fuel
+   bounds that descent; running out says yes, which prints no type argument. *)
+Fixpoint determines_tvar_fuel (fuel : nat) (i : nat) (dom : box_type) (arg : term) : bool :=
   andb (mentions_tvar i dom)
-  match EAstUtils.decompose_app arg with
-  | (tConstruct ind c _, _) =>
-    match ty_args dom with
-    | [] => true
-    | targs =>
-      let fields := ctor_field_types ind c in
-      existsb id (mapi (fun p targ => andb (mentions_tvar i targ) (existsb (mentions_tvar p) fields)) targs)
+  match fuel with
+  | 0 => true
+  | S fuel =>
+    match EAstUtils.decompose_app arg with
+    | (tConstruct ind c _, cargs) =>
+      match ty_args dom with
+      | [] => true
+      | targs =>
+        let fields := ctor_field_types ind c in
+        (* erasure may keep the parameters as leading arguments of the constructor *)
+        let values := skipn (#|cargs| - #|fields|) cargs in
+        existsb id (mapi (fun p targ =>
+          andb (mentions_tvar i targ)
+               (existsb (fun '(field, value) =>
+                           andb (mentions_tvar p field)
+                                match field with
+                                | TVar q => determines_tvar_fuel fuel i targ value
+                                | _ => true
+                                end)
+                        (combine fields values))) targs)
+      end
+    | _ => true
     end
-  | _ => true
   end.
+
+Definition determines_tvar : nat -> box_type -> term -> bool := determines_tvar_fuel 16.
 
 (* The type arguments of a call, printed only when rustc cannot infer one of them.
    Erasure removed the explicit type argument, and a type variable that occurs
@@ -683,15 +702,24 @@ Definition lambda_captures (Γ : list ident) (body : term) : list ident :=
                      end)
            (nodup Nat.eq_dec (free_rels 1 body)).
 
-(* An inductive with a type parameter that no constructor field mentions may be a
-   family indexed by a type, as [GExp] with [nat : Nat -> GExp Nat] and
-   [bool : Bool -> GExp Bool]: erasure loses the index, and the branches of a match
-   have different Rust types although each has the type the match asks for in the
-   source.  Such a branch is printed under [__cast], the counterpart of OCaml's
-   [Obj.magic]; the program's typing in Rocq guarantees that the two types agree. *)
+(* An inductive with an unnamed type variable that no constructor field mentions is
+   taken for a family indexed by a type, as [GExp : Set -> Type] with
+   [nat : Nat -> GExp Nat] and [bool : Bool -> GExp Bool]: erasure loses the index,
+   and the branches of a match have different Rust types although each has the type
+   the match asks for in the source.  Such a branch is printed under [__cast], the
+   counterpart of OCaml's [Obj.magic]; the program's typing in Rocq guarantees that
+   the two types agree.  Dearging resets [ind_npars], so the printer tells an index
+   from a parameter by its binder: a parameter has a name, and a phantom parameter
+   must get no cast, because all branches have one type and a cast hides it from
+   rustc's inference.  An index with a named binder gets no cast either, and rustc
+   then rejects the program. *)
 Definition is_type_family (oib : Ex.one_inductive_body) : bool :=
   let fields := flat_map (fun '(_, fs, _) => map snd fs) (Ex.ind_ctors oib) in
-  existsb id (mapi (fun i _ => negb (existsb (mentions_tvar i) fields)) (Ex.ind_type_vars oib)).
+  existsb id (mapi (fun i tv =>
+    andb (Ex.tvar_is_arity tv)
+         (andb (match Ex.tvar_name tv with BasicAst.nAnon => true | _ => false end)
+               (negb (existsb (mentions_tvar i) fields))))
+    (Ex.ind_type_vars oib)).
 
 Section print_term.
   Context (print_term : list ident -> term -> PrettyPrinter unit).
