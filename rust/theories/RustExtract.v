@@ -834,6 +834,14 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
     pop_indent
 
   | tApp head arg =>
+    (* [print_term] on the last argument is computed once: a second call would
+       double the work at every level of a nested application, as in a [nat]
+       literal [S (S (S ..))], because extracted code is call by value *)
+    let last_printed :=
+        if needs_block arg then
+          append "{ ";; print_term Γ arg;; append " }"
+        else
+          print_term Γ arg in
 
     (fix f head args_printed args_borrowed {struct head} :=
        match head with
@@ -877,14 +885,7 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
            (fun pref a => append pref;; a;; append ")";; ret ")(") args_printed "(";;
          ret tt
 
-       end) head [if needs_block arg then
-                    append "{ ";; print_term Γ arg;; append " }"
-                  else
-                    print_term Γ arg]
-                 [borrowed_arg Γ arg (if needs_block arg then
-                                        append "{ ";; print_term Γ arg;; append " }"
-                                      else
-                                        print_term Γ arg)]
+       end) head [last_printed] [borrowed_arg Γ arg last_printed]
 
   | tConst kn => print_const kn []
   | tConstruct ind i [] => print_constructor ind i []
