@@ -116,6 +116,12 @@ Local Instance plugin_extract_preamble : Preamble :=
 "";
 "fn hint_app<TArg, TRet>(f: &dyn Fn(TArg) -> TRet) -> &dyn Fn(TArg) -> TRet {";
 "  f";
+"}";
+"";
+"fn __cast<S, T>(x: S) -> T {";
+"  let y = unsafe { std::mem::transmute_copy::<S, T>(&x) };";
+"  std::mem::forget(x);";
+"  y";
 "}" ];
 program_preamble := [
 "fn alloc<T>(&'a self, t: T) -> &'a T {";

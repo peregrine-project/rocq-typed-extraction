@@ -663,6 +663,8 @@ Definition print_const_turbofish (turbofish : string) (kn : kername) (args : lis
   monad_append_concat (map it_app args_in_tail);;
   pop_indent.
 
+Definition print_const := print_const_turbofish "".
+
 Definition needs_block (t : term) : bool :=
   match t with
   | tLetIn _ _ _
@@ -680,6 +682,16 @@ Definition lambda_captures (Γ : list ident) (body : term) : list ident :=
                      | None => []
                      end)
            (nodup Nat.eq_dec (free_rels 1 body)).
+
+(* An inductive with a type parameter that no constructor field mentions may be a
+   family indexed by a type, as [GExp] with [nat : Nat -> GExp Nat] and
+   [bool : Bool -> GExp Bool]: erasure loses the index, and the branches of a match
+   have different Rust types although each has the type the match asks for in the
+   source.  Such a branch is printed under [__cast], the counterpart of OCaml's
+   [Obj.magic]; the program's typing in Rocq guarantees that the two types agree. *)
+Definition is_type_family (oib : Ex.one_inductive_body) : bool :=
+  let fields := flat_map (fun '(_, fs, _) => map snd fs) (Ex.ind_ctors oib) in
+  existsb id (mapi (fun i _ => negb (existsb (mentions_tvar i) fields)) (Ex.ind_type_vars oib)).
 
 Section print_term.
   Context (print_term : list ident -> term -> PrettyPrinter unit).
@@ -741,6 +753,8 @@ Section print_term.
     append " {";;
 
     oib <- wrap_result (lookup_ind_decl ind) id;;
+    let rem := remap_inductive remaps ind in
+    let family := is_type_family oib in
 
     push_indent (col + indent_size);;
     (fix print_cases
@@ -794,7 +808,11 @@ Section print_term.
                             else append ("let " ^ a ^ " = Clone::clone(" ^ a ^ ");");; append_nl) bound)
                else ret tt);;
               let marked := mapi (fun i a => mark_entry (nb - 1 - i) t a) bound in
-              print_term (List.rev marked ++ skipn nb Γ)%list t
+              let Γ' := (List.rev marked ++ skipn nb Γ)%list in
+              (if family then
+                 append "__cast({ ";; print_term Γ' t;; append " })"
+               else
+                 print_term Γ' t)
             | name :: bctx0 =>
               name <- fresh_ident name Γ;;
               print_branch bctx0 (name :: args) (name :: Γ)
@@ -860,22 +878,21 @@ Section print_term.
     pop_indent.
 End print_term.
 
-       | tConst kn =>
-         (* a saturated call passes a borrowed position by reference *)
-         n <- get_num_inline_args kn;;
-         let use_ref j := andb is_rc (andb (Nat.leb n #|args_printed|)
-                                           (andb (Nat.ltb j n) (rc_borrowed kn j))) in
-         let printed := mapi (fun j '(p, b) => if use_ref j then b else p)
-                             (combine args_printed args_borrowed) in
-         match erased_result_arity kn with
-         | Some m =>
-           if (m <? #|args_printed|)%nat then print_const kn (firstn m printed)
-           else print_const kn printed
-         | None =>
-           print_const_turbofish (call_turbofish kn (snd (EAstUtils.decompose_app t))) kn printed
-         end
-
-       | tBox => append term_box_symbol
+(* An argument at a borrowed position: a variable is passed by reference without
+   a clone (a borrowed parameter or a fixpoint cell already is a reference), any
+   other argument is a temporary that lives for the call. *)
+Definition borrowed_arg (Γ : list ident) (a : term) (printed : PrettyPrinter unit)
+  : PrettyPrinter unit :=
+  match a with
+  | tRel n =>
+    match nth_error Γ n with
+    | Some e =>
+      if is_ref e then append (unmark e)
+      else if is_plain_ident e then append ("&" ++ unmark e)
+      else append e
+    | None => printer_fail ("unbound tRel " ++ string_of_nat n)
+    end
+  | _ => append "&(";; printed;; append ")"
   end.
 
 Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit :=
