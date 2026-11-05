@@ -448,3 +448,14 @@ Module SafeHead.
   Proof. vm_compute. reflexivity. Qed.
 
 End SafeHead.
+
+(** Printing an application prints each argument once. Printing one twice takes
+    time exponential in the depth of the nesting, here that of a [nat] literal. *)
+Module LargeLiteral.
+  Definition large_literal : nat := 40.
+  MetaRocq Quote Recursively Definition large_literal_p := large_literal.
+
+  Example large_literal_test :
+    match extract large_literal_p with Ok _ => True | Err _ => False end.
+  Proof. timeout 60 vm_compute. exact I. Qed.
+End LargeLiteral.
