@@ -512,6 +512,16 @@ Definition print_const_turbofish (turbofish : string) (kn : kername) (args : lis
   monad_append_concat (map it_app args_in_tail);;
   pop_indent.
 
+(* An inductive with a type parameter that no constructor field mentions may be a
+   family indexed by a type, as [GExp] with [nat : Nat -> GExp Nat] and
+   [bool : Bool -> GExp Bool]: erasure loses the index, and the branches of a match
+   have different Rust types although each has the type the match asks for in the
+   source.  Such a branch is printed under [__cast], the counterpart of OCaml's
+   [Obj.magic]; the program's typing in Rocq guarantees that the two types agree. *)
+Definition is_type_family (oib : Ex.one_inductive_body) : bool :=
+  let fields := flat_map (fun '(_, fs, _) => map snd fs) (Ex.ind_ctors oib) in
+  existsb id (mapi (fun i _ => negb (existsb (mentions_tvar i) fields)) (Ex.ind_type_vars oib)).
+
 Section print_term.
   Context (print_term : list ident -> term -> PrettyPrinter unit).
 
@@ -525,6 +535,7 @@ Section print_term.
 
     oib <- wrap_result (lookup_ind_decl ind) id;;
     let rem := remap_inductive remaps ind in
+    let family := is_type_family oib in
 
     push_indent (col + indent_size);;
     (fix print_cases
@@ -566,7 +577,10 @@ Section print_term.
               print_parenthesized (0 <? #|args|)%nat (append_join ", " args);;
               append " => {";;
               append_nl ;;
-              print_term Γ t
+              (if family then
+                 append "__cast({ ";; print_term Γ t;; append " })"
+               else
+                 print_term Γ t)
             | name :: bctx0 =>
               name <- fresh_ident name Γ;;
               print_branch bctx0 (name :: args) (name :: Γ)
