@@ -21,6 +21,9 @@ Module E := MetaRocq.Erasure.EAst.
 (* [subst] — used by [native_rec_body] to rewrite a single fixpoint's
    self-reference into a direct call to the enclosing constant. *)
 From MetaRocq.Erasure Require ELiftSubst.
+From MetaRocq.Erasure Require EPrimitive.
+From MetaRocq.Utils Require Show.
+From Stdlib.Strings Require Byte PrimStringAxioms.
 Module T := MetaRocq.Template.Ast.
 Module TUtil := MetaRocq.Template.AstUtils.
 Module EF := MetaRocq.Erasure.ErasureFunction.
@@ -199,6 +202,15 @@ Definition fresh_ty_arg_name (name : name) (Γ : list ident) : PrettyPrinter ide
   | nNamed name => ret (fresh (clean_local_ident name) (Γ ++ used_names))
   end.
 
+(* Rocq's primitive types have no declaration to print: a primitive integer is an
+   [i64] (its values are below 2^63) and a primitive string, an array of bytes, is
+   a byte slice. *)
+Definition prim_int_kn : kername :=
+  (MPfile ["PrimInt63"; "Int63"; "Cyclic"; "Numbers"; "Corelib"], "int").
+
+Definition prim_string_kn : kername :=
+  (MPfile ["PrimString"; "Strings"; "Corelib"], "string").
+
 Definition parenthesize_ty_app_arg (t : box_type) : bool :=
   match t with
   | TApp _ _ => true
@@ -236,6 +248,8 @@ Fixpoint print_type_aux (Γ : list ident) (t : box_type) (args : list (PrettyPri
       append ">"
 
   | TConst name =>
+    if eq_kername name prim_int_kn then append "i64" else
+    if eq_kername name prim_string_kn then append "&'a [u8]" else
     append ((get_ty_const_ident name) ++ "<");;
     monad_append_join (append ", ") (append "'a" :: args);;
     append ">"
@@ -370,6 +384,31 @@ Definition print_constructor
     print_app head final_args;;
     append ")";;
     pop_indent
+  end.
+
+(* The body of a Rust byte string literal: every byte other than an ASCII letter,
+   digit or space is written as a hexadecimal escape. *)
+Definition hex_digit (n : nat) : string :=
+  nth n ["0"; "1"; "2"; "3"; "4"; "5"; "6"; "7"; "8"; "9"; "a"; "b"; "c"; "d"; "e"; "f"] "0".
+
+Fixpoint rust_bytes (s : string) : string :=
+  match s with
+  | String.EmptyString => ""
+  | String.String b r =>
+    let n := Byte.to_nat b in
+    let range lo hi := andb (Nat.leb lo n) (Nat.leb n hi) in
+    let plain := orb (range 32 32) (orb (range 48 57) (orb (range 65 90) (range 97 122))) in
+    (if plain then String.String b String.EmptyString
+     else "\x" ++ hex_digit (Nat.div n 16) ++ hex_digit (Nat.modulo n 16)) ++ rust_bytes r
+  end%nat.
+
+Definition print_prim (p : EPrimitive.prim_val term) : PrettyPrinter unit :=
+  match projT2 p with
+  | EPrimitive.primIntModel i => append (Show.string_of_prim_int i ++ "i64")
+  | EPrimitive.primStringModel s =>
+    let bytes := String.concat "" (map Show.char63_to_string (PrimStringAxioms.to_list s)) in
+    append ("&b""" ++ rust_bytes bytes ++ """[..]")
+  | _ => printer_fail "Cannot handle Rocq primitive floats and arrays yet"
   end.
 
 Definition print_const (kn : kername) (args : list (PrettyPrinter unit)) : PrettyPrinter unit :=
@@ -680,7 +719,7 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
     printer_fail ("unhandled tProj on " ^ (string_of_kername (inductive_mind ind)))
 
   | tCoFix _ _ => printer_fail "Cannot handle tCoFix yet"
-  | tPrim _ => printer_fail "Cannot handle Rocq primitive types yet"
+  | tPrim p => print_prim p
   | tLazy _ => printer_fail "Cannot handle lazy yet"
   | tForce _ => printer_fail "Cannot handle force yet"
   end.
