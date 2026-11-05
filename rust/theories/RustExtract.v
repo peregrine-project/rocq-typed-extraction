@@ -156,12 +156,41 @@ Definition is_ref (s : string) : bool :=
   | _ => false
   end.
 
+(* The mark [?]: the variable is owned, it is used more than once on some path, and
+   nothing after the current term uses it.  A [match] in tail position may then move
+   it in a branch, by [moved_in_branch_at_most_once] of [OccCorrect.v].  Only a [match]
+   and a [let] see this mark: [print_term] removes it for every other term. *)
+Definition is_tail (s : string) : bool :=
+  match s with
+  | bytestring.String.String c _ => Byte.eqb c "?"%byte
+  | _ => false
+  end.
+
 Definition unmark (s : string) : string :=
   match s with
   | bytestring.String.String c r =>
-    if orb (Byte.eqb c "!"%byte) (Byte.eqb c "*"%byte) then r else s
+    if orb (Byte.eqb c "!"%byte) (orb (Byte.eqb c "*"%byte) (Byte.eqb c "?"%byte)) then r else s
   | _ => s
   end.
+
+Definition demote (s : string) : string := if is_tail s then unmark s else s.
+
+(* The entries of a context after [v] has been evaluated, [v] at offset [off]: a
+   variable [v] uses has lost the mark [?], as [v] may hold a borrow of it. *)
+Definition tail_after (off : nat) (Γ : list string) (v : term) : list string :=
+  mapi (fun i e => if Nat.eqb (occ (i + off) v) 0 then e else demote e) Γ.
+
+(* The entries in a branch [t] that binds [nb] variables: [?] becomes moved where the
+   branch uses the variable at most once. *)
+Definition tail_in_branch (nb : nat) (t : term) (Γ : list string) : list string :=
+  mapi (fun i e => if andb (is_tail e) (movable (i + nb) t) then "!" ++ unmark e else e) Γ.
+
+(* The variables with the mark [?] that the branch does not use.  Dropping them on entry
+   leaves nothing to drop after a call in tail position. *)
+Definition tail_unused (nb : nat) (t : term) (Γ : list string) : list string :=
+  flat_map (fun '(i, e) =>
+              if andb (is_tail e) (Nat.eqb (occ (i + nb) t) 0) then [unmark e] else [])
+           (combine (seq 0 #|Γ|) Γ).
 
 Section FixEnv.
 Context (Σ : Ex.global_env).
@@ -187,7 +216,7 @@ Definition is_rc : bool :=
 (* The context entry of a variable bound with body [t] at index [k]: marked as
    moved when, in Rc mode, [t] uses it at most once on every path. *)
 Definition mark_entry (k : nat) (t : term) (x : string) : string :=
-  if andb is_rc (movable k t) then "!" ++ x else x.
+  if is_rc then (if movable k t then "!" ++ x else "?" ++ x) else x.
 
 (* The bound on each type parameter of a function *)
 Definition ty_param_bound : string :=
@@ -459,7 +488,19 @@ Definition native_rec_body (doms : list box_type) (kn : kername) (body : term) :
       let inner := ELiftSubst.subst
                      [mkApps (tConst kn) (rev_map tRel (seq 0 k))] 0 (E.dbody d) in
       fold_left (fun t na => tLambda na t) acc inner
-    | _ => body
+    | _ =>
+      (* [λA λl. (fix f := ..) l], the shape of a function with a section
+         parameter such as [app] when the constant is not dearged: the outer
+         lambdas stay and the fixpoint's own parameters follow them. *)
+      let j := #|args| in
+      let k' := k - j in
+      if andb (Nat.leb j k)
+              (andb (nrb_is_eta_args (skipn k' doms) j args)
+                    (ELiftSubst.closedn 1 (E.dbody d))) then
+        let inner := ELiftSubst.subst
+                       [mkApps (tConst kn) (rev_map tRel (seq 0 k'))] 0 (E.dbody d) in
+        fold_left (fun t na => tLambda na t) (skipn j acc) inner
+      else body
     end
   | _ => body
   end.
@@ -765,19 +806,19 @@ Section print_term.
          | Some name =>
            if is_ref name then append (unmark name)
            else if is_plain_ident name then append ("&" ++ unmark name)
-           else (append "&";; print_term Γ discr)
+           else (append "&";; print_term (map demote Γ) discr)
          | None => printer_fail ("unbound tRel " ++ string_of_nat n)
          end
        | _ =>
          append "&";;
          if needs_block discr then
-           append "{ ";; print_term Γ discr;; append " }"
+           append "{ ";; print_term (map demote Γ) discr;; append " }"
          else
-           print_term Γ discr
+           print_term (map demote Γ) discr
        end;;
        append ")"
      else
-       print_term Γ discr);;
+       print_term (map demote Γ) discr);;
     append " {";;
 
     oib <- wrap_result (lookup_ind_decl ind) id;;
@@ -833,7 +874,10 @@ Section print_term.
               let marked := if borrow
                             then map (fun a => "*" ++ a) bound
                             else mapi (fun i a => mark_entry (nb - 1 - i) t a) bound in
-              let Γ' := (List.rev marked ++ skipn nb Γ)%list in
+              let outer := tail_after 0 (skipn nb Γ) discr in
+              monad_append_concat
+                (map (fun x => append ("drop(" ^ x ^ ");");; append_nl) (tail_unused nb t outer));;
+              let Γ' := (List.rev marked ++ tail_in_branch nb t outer)%list in
               (if family then
                  append "__cast({ ";; print_term Γ' t;; append " })"
                else
@@ -921,6 +965,10 @@ Definition borrowed_arg (Γ : list ident) (a : term) (printed : PrettyPrinter un
   end.
 
 Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit :=
+  let Γ := match t with
+           | tCase _ _ _ | tLetIn _ _ _ => Γ
+           | _ => map demote Γ
+           end in
   match t with
   | tBox => append term_box_symbol
   | tRel n =>
@@ -977,7 +1025,7 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
 
     push_indent (col + indent_size);;
     append_nl;;
-    print_term Γ val;;
+    print_term (map demote Γ) val;;
     pop_indent;;
 
     (if needs_block val then
@@ -988,7 +1036,7 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
 
     append_nl;;
 
-    print_term (mark_entry 0 body name :: Γ) body;;
+    print_term (mark_entry 0 body name :: tail_after 0 Γ val) body;;
     pop_indent
 
   | tApp head arg =>
@@ -1183,7 +1231,8 @@ Definition print_constant
                  | _, _ => occ k t
                  end in
            let na' := if brw then "*" ++ na
-                      else if andb is_rc (Nat.leb (occ_top 0 body cod) 1) then "!" ++ na else na in
+                      else if is_rc then (if Nat.leb (occ_top 0 body cod) 1 then "!" ++ na else "?" ++ na)
+                      else na in
            print_top (S j) (na' :: Γ) body cod
          | _, _ =>
            append ") -> ";;
