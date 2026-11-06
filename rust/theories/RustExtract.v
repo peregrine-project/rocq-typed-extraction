@@ -147,9 +147,9 @@ Definition type_param_masks_of (Σ : Ex.global_env) : type_param_masks :=
                        end) Σ;
          alias_param_masks :=
            flat_map (fun '(kn, _, decl) =>
-                       match decl, remap_constant remaps kn with
-                       | Ex.TypeAliasDecl (Some (tvars, _)), None => [(kn, all_removed #|tvars|)]
-                       | _, _ => []
+                       match decl, remap_constant remaps kn, remap_inline_constant remaps kn with
+                       | Ex.TypeAliasDecl (Some (tvars, _)), None, None => [(kn, all_removed #|tvars|)]
+                       | _, _, _ => []
                        end) Σ |} in
   let fix go fuel ms :=
       match fuel with
