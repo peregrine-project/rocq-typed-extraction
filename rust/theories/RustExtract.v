@@ -126,9 +126,16 @@ Definition count_removed_params (ms : type_param_masks) : nat :=
   fold_left (fun n '(_, mask) => n + count_ones mask) (ind_param_masks ms) 0
   + fold_left (fun n '(_, mask) => n + count_ones mask) (alias_param_masks ms) 0.
 
+(* An index of an inductive family: an arity type variable with no name, which
+   dearging leaves in place of the index.  The printer casts a branch of a match on
+   such a family, so the variable is kept. *)
+Definition is_family_index (tv : Ex.type_var_info) : bool :=
+  andb (Ex.tvar_is_arity tv)
+       (match Ex.tvar_name tv with BasicAst.nAnon => true | _ => false end).
+
 (* Start from removing every parameter of an inductive or a type alias that is
-   not remapped, and keep the parameters that occur outside the removed ones
-   until no mask changes. Each step that changes a mask keeps one more
+   not remapped, except the indices of a family, and keep the parameters that
+   occur outside the removed ones until no mask changes. Each step that changes a mask keeps one more
    parameter, so [count_removed_params] steps suffice. *)
 Definition type_param_masks_of (Σ : Ex.global_env) : type_param_masks :=
   let all_removed n := repeat true n in
@@ -141,7 +148,7 @@ Definition type_param_masks_of (Σ : Ex.global_env) : type_param_masks :=
                                  let ind := mkInd kn i in
                                  match remap_inductive remaps ind with
                                  | Some _ => (ind, [])
-                                 | None => (ind, all_removed #|ind_type_vars oib|)
+                                 | None => (ind, map (fun tv => negb (is_family_index tv)) (ind_type_vars oib))
                                  end) (Ex.ind_bodies mib)
                        | _ => []
                        end) Σ;

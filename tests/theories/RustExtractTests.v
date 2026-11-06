@@ -446,3 +446,51 @@ Module SafeHead.
   Proof. vm_compute. reflexivity. Qed.
 
 End SafeHead.
+
+(** An index of an inductive family keeps its type variable, so that a match on the
+    family can cast its branches. *)
+Module FamilyIndex.
+  Inductive GE : Type -> Type := gn : nat -> GE nat | gb : bool -> GE bool.
+  Definition ge_val (A : Type) (g : GE A) : nat := match g with gn n => n | gb _ => 0 end.
+  MetaRocq Quote Recursively Definition quoted := ge_val.
+
+  Example test :
+    extract quoted = Ok <$
+    "#[derive(Debug, Clone)]";
+    "pub enum Nat<'a> {";
+    "  O(PhantomData<&'a ()>),";
+    "  S(PhantomData<&'a ()>, &'a Nat<'a>)";
+    "}";
+    "";
+    "#[derive(Debug, Clone)]";
+    "pub enum Bool<'a> {";
+    "  true(PhantomData<&'a ()>),";
+    "  false(PhantomData<&'a ()>)";
+    "}";
+    "";
+    "#[derive(Debug, Clone)]";
+    "pub enum GE<'a, a> {";
+    "  gn(PhantomData<&'a a>, &'a Nat<'a>),";
+    "  gb(PhantomData<&'a a>, &'a Bool<'a>)";
+    "}";
+    "";
+    "fn ge_val<A: Copy>(&'a self, g: &'a GE<'a, A>) -> &'a Nat<'a> {";
+    "  match g {";
+    "    &GE::gn(_, n) => {";
+    "      n";
+    "    },";
+    "    &GE::gb(_, b) => {";
+    "      self.alloc(";
+    "        Nat::O(";
+    "          PhantomData))";
+    "    },";
+    "  }";
+    "}";
+    "fn ge_val__curried<A: Copy>(&'a self) -> &'a dyn Fn(&'a GE<'a, A>) -> &'a Nat<'a> {";
+    "  self.closure(move |g| {";
+    "    self.ge_val(";
+    "      g)";
+    "  })";
+    "}" $>.
+  Proof. vm_compute. reflexivity. Qed.
+End FamilyIndex.
