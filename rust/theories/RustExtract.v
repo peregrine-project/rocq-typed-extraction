@@ -18,6 +18,9 @@ Module P := MetaRocq.PCUIC.PCUICAst.
 Module PT := MetaRocq.PCUIC.PCUICTyping.
 Module T2P := MetaRocq.TemplatePCUIC.TemplateToPCUIC.
 Module E := MetaRocq.Erasure.EAst.
+(* [subst] — used by [native_rec_body] to rewrite a single fixpoint's
+   self-reference into a direct call to the enclosing constant. *)
+From MetaRocq.Erasure Require ELiftSubst.
 Module T := MetaRocq.Template.Ast.
 Module TUtil := MetaRocq.Template.AstUtils.
 Module EF := MetaRocq.Erasure.ErasureFunction.
@@ -55,9 +58,10 @@ Local Notation "a ^ b" := (a ++ b).
    undetermined at a call such as [fromProxy (proxy nat)] for
    [Inductive Proxy (A : Type) := proxy : Proxy A].
    [prune_type_params] removes these parameters from the inductives and the
-   type aliases, removes the corresponding arguments from all types, and
-   removes the type parameters of a constant that then no longer occur in its
-   type. *)
+   type aliases, except the index of an inductive family, and removes the
+   corresponding arguments from all types. It also removes each type parameter
+   of a constant that no longer occurs in the constant's type after this
+   removal. *)
 Section PruneTypeParams.
 Context (remaps : remaps).
 
@@ -127,8 +131,8 @@ Definition count_removed_params (ms : type_param_masks) : nat :=
   + fold_left (fun n '(_, mask) => n + count_ones mask) (alias_param_masks ms) 0.
 
 (* An index of an inductive family: an arity type variable with no name, which
-   dearging leaves in place of the index.  The printer casts a branch of a match on
-   such a family, so the variable is kept. *)
+   dearging leaves in place of the index.  It is kept, because #24 casts a
+   branch of a match on such a family to the index's type. *)
 Definition is_family_index (tv : Ex.type_var_info) : bool :=
   andb (Ex.tvar_is_arity tv)
        (match Ex.tvar_name tv with BasicAst.nAnon => true | _ => false end).
@@ -427,6 +431,75 @@ Fixpoint print_type_aux (Γ : list ident) (t : box_type) (args : list (PrettyPri
 
 Definition print_type Γ t := print_type_aux Γ t [].
 
+(* Compare an argument list to [tRel (k-1); ...; tRel 0], i.e. the [k] outer
+   lambda variables in application order (the shape of a fully eta-expanded
+   fixpoint [(fix ..) x1 .. xk]).  [doms] lists the domain types of the outer
+   lambdas still to be matched, outermost first. *)
+Fixpoint nrb_is_eta_args (doms : list box_type) (i : nat) (args : list term) : bool :=
+  match i, args with
+  | 0, nil => true
+  | S i', tRel j :: args' => andb (Nat.eqb j i') (nrb_is_eta_args (tl doms) i' args')
+  (* An erased type/proof argument is a [()] value, interchangeable with the
+     outer slot it fills only when that slot is erased too.  This covers
+     polymorphic recursors [λA. (fix) box l1 ..] whose type slot erases to a
+     box rather than the [A] variable.  A box in a slot of any other type would
+     print a [()] where the signature expects a value. *)
+  | S i', tBox :: args' =>
+    match doms with
+    | TBox :: doms' => nrb_is_eta_args doms' i' args'
+    | _ => false
+    end
+  | _, _ => false
+  end.
+
+(* Native recursion.  A single (non-mutual) fixpoint constant [kn] -- possibly
+   eta-wrapped as [λx1..λxk. (fix f := λ.. body) x1 .. xk] (the shape erasure
+   produces) -- is compiled to a native recursive [fn].  Strip the [k] outer
+   lambdas; when the core is the fixpoint applied to exactly those [k] variables
+   and its body refers to none of them, drop the eta wrapper and return the
+   fixpoint body with its self-variable replaced by [tConst kn].  A bare
+   fixpoint under outer lambdas keeps them, and its self-variable becomes
+   [kn] applied to them, so it may capture them.  Recursive calls then print as
+   direct [self.<name>(..)] calls (see [print_const]) -- no heap
+   [Cell<Option<&dyn Fn>>], no dynamic dispatch.  Any other shape (mutual fix, an
+   eta-wrapped fix whose body captures an outer variable, or a fix applied to
+   anything else) is returned unchanged and handled by [print_term]'s [tFix]
+   closure-cell case.  [doms] lists the domain types of the outer lambdas. *)
+Definition native_rec_body (doms : list box_type) (kn : kername) (body : term) : term :=
+  let fix strip (acc : list name) (b : term) : list name * term :=
+    match b with
+    | tLambda na b' => strip (na :: acc) b'
+    | _ => (acc, b)
+    end in
+  let '(acc, core) := strip nil body in
+  let k := #|acc| in
+  let '(hd, args) := EAstUtils.decompose_app core in
+  match hd with
+  | tFix (d :: nil) 0 =>
+    if andb (nrb_is_eta_args doms k args) (ELiftSubst.closedn 1 (E.dbody d)) then
+      ELiftSubst.subst [tConst kn] 0 (E.dbody d)
+    else match args with
+    | nil =>
+      let inner := ELiftSubst.subst
+                     [mkApps (tConst kn) (rev_map tRel (seq 0 k))] 0 (E.dbody d) in
+      fold_left (fun t na => tLambda na t) acc inner
+    | _ =>
+      (* [λA λl. (fix f := ..) l], the shape of a function with a section
+         parameter such as [app] when the constant is not dearged: the outer
+         lambdas stay and the fixpoint's own parameters follow them. *)
+      let j := #|args| in
+      let k' := k - j in
+      if andb (Nat.leb j k)
+              (andb (nrb_is_eta_args (skipn k' doms) j args)
+                    (ELiftSubst.closedn 1 (E.dbody d))) then
+        let inner := ELiftSubst.subst
+                       [mkApps (tConst kn) (rev_map tRel (seq 0 k'))] 0 (E.dbody d) in
+        fold_left (fun t na => tLambda na t) (skipn j acc) inner
+      else body
+    end
+  | _ => body
+  end.
+
 (* Whether a box_type contains no free type variables. Only such types are
    safe to print outside of a definition's own [Γty] context: printing a
    [TVar n] requires resolving [n] against the [Γty] of the definition that
@@ -448,15 +521,26 @@ Definition get_num_inline_args (kn : kername) : PrettyPrinter nat :=
   cst <- wrap_option
            (Ex.lookup_constant Σ kn)
            ("Could not find constant " ++ (string_of_kername kn));;
+  (* A config-path remap keeps the erased body, but its arity is the arity of
+     the constant's TYPE (the remap supplies a fixed uncurried Rust body), so
+     count type arrows there rather than leading lambdas of the body. *)
+  match remap_constant remaps kn with
+  | Some _ => ret #|fst (decompose_arr (snd (Ex.cst_type cst)))|
+  | None =>
   match Ex.cst_body cst with
   | None => ret #|fst (decompose_arr (snd (Ex.cst_type cst)))|
   | Some body =>
+    (* A single (non-mutual) fixpoint is compiled as a native recursive [fn]
+       (see [print_constant]); after [native_rec_body] its arity is the number
+       of leading lambdas, so callers emit a direct saturated call. *)
+    let body := native_rec_body (fst (decompose_arr (snd (Ex.cst_type cst)))) kn body in
     let fix count body ty :=
         match body, ty with
         | tLambda _ body, TArr dom cod => S (count body cod)
         | _, _ => 0
         end in
     ret (count body (snd (Ex.cst_type cst)))
+  end
   end.
 
 Definition print_app
@@ -893,6 +977,10 @@ Definition print_constant
         (append_join ", " (map (fun na => na ++ ": Copy") Γty));;
       append "(&'a self";;
 
+      (* Native recursion: rewrite a single fixpoint's self-reference to a
+         direct call to this constant, so recursion compiles to a native
+         recursive [fn] rather than a heap [Cell<Option<&dyn Fn>>]. *)
+      let body := native_rec_body (fst (decompose_arr ty)) kn body in
       (fix print_top Γ body ty :=
          match body, ty with
          | tLambda na body, TArr dom cod =>
@@ -933,14 +1021,20 @@ Definition print_constant
      append_nl;;
 
      push_use (rname ++ "__curried");;
-     eta_term <-
-     (fix make_eta_term n body ty :=
-        match body, ty with
-        | tLambda na body, TArr dom cod =>
-          eta_term <- make_eta_term (S n) body cod;;
-          ret (tLambda na eta_term)
-        | _, _ => ret (mkApps (tConst kn) (rev_map tRel (seq 0 n)))
-        end) 0 body ty;;
+     (* Eta-expand to the FULL arity reported by [get_num_inline_args], rather
+        than to the number of leading lambdas of the erased body.  Those two
+        disagree for a fixpoint-bodied constant (whose body is [λ.. (fix ..)])
+        and for a remapped constant (whose body is irrelevant, the arity coming
+        from the type).  Expanding to too few arguments makes [print_const] see
+        an under-application and route the call back to this very wrapper, so
+        [foo__curried] would call itself and diverge. *)
+     let eta_term :=
+       (fix wrap (k : nat) (t : term) : term :=
+          match k with
+          | 0 => t
+          | S k' => wrap k' (tLambda nAnon t)
+          end) num_inline_args
+         (mkApps (tConst kn) (rev_map tRel (seq 0 num_inline_args))) in
      print_term [] eta_term;;
 
      pop_indent;;

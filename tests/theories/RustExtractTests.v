@@ -78,9 +78,9 @@ Module ex1.
     "  }";
     "}";
     "fn proj1_sig__curried<A: Copy>(&'a self) -> &'a dyn Fn(&'a Sig<'a, A>) -> A {";
-    "  self.closure(move |e| {";
+    "  self.closure(move |x| {";
     "    self.proj1_sig(";
-    "      e)";
+    "      x)";
     "  })";
     "}";
     "";
@@ -126,9 +126,9 @@ Module ex2.
     "  }";
     "}";
     "fn proj1_sig__curried<A: Copy>(&'a self) -> &'a dyn Fn(&'a Sig<'a, A>) -> A {";
-    "  self.closure(move |e| {";
+    "  self.closure(move |x| {";
     "    self.proj1_sig(";
-    "      e)";
+    "      x)";
     "  })";
     "}";
     "";
@@ -175,11 +175,11 @@ Module ex3.
     "  }";
     "}";
     "fn add__curried(&'a self) -> &'a dyn Fn(&'a Nat<'a>) -> &'a dyn Fn(&'a Nat<'a>) -> &'a Nat<'a> {";
-    "  self.closure(move |n| {";
-    "    self.closure(move |m| {";
+    "  self.closure(move |x| {";
+    "    self.closure(move |x2| {";
     "      self.add(";
-    "        n,";
-    "        m)";
+    "        x,";
+    "        x2)";
     "    })";
     "  })";
     "}" $>.
@@ -246,11 +246,11 @@ Module ex4.
     "  }";
     "}";
     "fn ack__curried(&'a self) -> &'a dyn Fn(&'a Nat<'a>) -> &'a dyn Fn(&'a Nat<'a>) -> &'a Nat<'a> {";
-    "  self.closure(move |n| {";
-    "    self.closure(move |m| {";
+    "  self.closure(move |x| {";
+    "    self.closure(move |x2| {";
     "      self.ack(";
-    "        n,";
-    "        m)";
+    "        x,";
+    "        x2)";
     "    })";
     "  })";
     "}" $>.
@@ -288,9 +288,9 @@ Module ex5.
     "  f";
     "}";
     "fn code__curried(&'a self) -> &'a dyn Fn(&'a T<'a>) -> &'a T<'a> {";
-    "  self.closure(move |f| {";
+    "  self.closure(move |x| {";
     "    self.code(";
-    "      f)";
+    "      x)";
     "  })";
     "}" $>.
   Proof. vm_compute. reflexivity. Qed.
@@ -355,9 +355,9 @@ Module SafeHead.
     "  }";
     "}";
     "fn proj1_sig__curried<A: Copy>(&'a self) -> &'a dyn Fn(&'a Sig<'a, A>) -> A {";
-    "  self.closure(move |e| {";
+    "  self.closure(move |x| {";
     "    self.proj1_sig(";
-    "      e)";
+    "      x)";
     "  })";
     "}";
     "";
@@ -365,9 +365,9 @@ Module SafeHead.
     "  panic!(""Absurd case!"")";
     "}";
     "fn False_rect__curried<P: Copy>(&'a self) -> &'a dyn Fn(()) -> P {";
-    "  self.closure(move |P| {";
+    "  self.closure(move |x| {";
     "    self.False_rect(";
-    "      P)";
+    "      x)";
     "  })";
     "}";
     "";
@@ -388,9 +388,9 @@ Module SafeHead.
     "  })(())";
     "}";
     "fn safe_head__curried<A: Copy>(&'a self) -> &'a dyn Fn(&'a Sig<'a, &'a List<'a, A>>) -> A {";
-    "  self.closure(move |non_empty_list| {";
+    "  self.closure(move |x| {";
     "    self.safe_head(";
-    "      non_empty_list)";
+    "      x)";
     "  })";
     "}";
     "";
@@ -414,10 +414,10 @@ Module SafeHead.
     "}";
     "fn repeat__curried<A: Copy>(&'a self) -> &'a dyn Fn(A) -> &'a dyn Fn(&'a Nat<'a>) -> &'a List<'a, A> {";
     "  self.closure(move |x| {";
-    "    self.closure(move |n| {";
+    "    self.closure(move |x2| {";
     "      self.repeat(";
     "        x,";
-    "        n)";
+    "        x2)";
     "    })";
     "  })";
     "}";
@@ -435,17 +435,32 @@ Module SafeHead.
     "              n))))))";
     "}";
     "fn head_of_repeat_plus_one__curried<A: Copy>(&'a self) -> &'a dyn Fn(&'a Nat<'a>) -> &'a dyn Fn(A) -> A {";
-    "  self.closure(move |n| {";
-    "    self.closure(move |a| {";
+    "  self.closure(move |x| {";
+    "    self.closure(move |x2| {";
     "      self.head_of_repeat_plus_one(";
-    "        n,";
-    "        a)";
+    "        x,";
+    "        x2)";
     "    })";
     "  })";
     "}" $>.
   Proof. vm_compute. reflexivity. Qed.
 
 End SafeHead.
+
+(** A fixpoint applied to the innermost lambdas only, the shape of [app] when the
+    constant is not dearged, becomes a native recursive function. *)
+Module NativeRecSuffix.
+  Definition kn : kername := (MPfile ["T"], "f").
+  Definition fx : E.term :=
+    E.tFix [{| E.dname := nNamed "g"; E.dbody := E.tLambda (nNamed "x") (E.tApp (E.tRel 1) (E.tRel 0)); E.rarg := 0 |}] 0.
+
+  Example native_rec_suffix :
+    native_rec_body [Ex.TBox; Ex.TBox; Ex.TBox] kn
+      (E.tLambda (nNamed "A") (E.tLambda (nNamed "l") (E.tApp fx (E.tRel 0))))
+    = E.tLambda (nNamed "A") (E.tLambda (nNamed "x")
+        (E.tApp (E.tApp (E.tConst kn) (E.tRel 1)) (E.tRel 0))).
+  Proof. vm_compute. reflexivity. Qed.
+End NativeRecSuffix.
 
 (* A lambda passed to a monomorphic constant applied to its full arity: the
    closure parameter is annotated with the domain type. *)
@@ -466,11 +481,11 @@ Module ClosureAnnot.
     "  hint_app(f)(n)";
     "}";
     "fn apply_nat__curried(&'a self) -> &'a dyn Fn(&'a dyn Fn(&'a Nat<'a>) -> &'a Nat<'a>) -> &'a dyn Fn(&'a Nat<'a>) -> &'a Nat<'a> {";
-    "  self.closure(move |f| {";
-    "    self.closure(move |n| {";
+    "  self.closure(move |x| {";
+    "    self.closure(move |x2| {";
     "      self.apply_nat(";
-    "        f,";
-    "        n)";
+    "        x,";
+    "        x2)";
     "    })";
     "  })";
     "}";
@@ -530,9 +545,9 @@ Module FamilyIndex.
     "  }";
     "}";
     "fn ge_val__curried<A: Copy>(&'a self) -> &'a dyn Fn(&'a GE<'a, A>) -> &'a Nat<'a> {";
-    "  self.closure(move |g| {";
+    "  self.closure(move |x| {";
     "    self.ge_val(";
-    "      g)";
+    "      x)";
     "  })";
     "}" $>.
   Proof. vm_compute. reflexivity. Qed.
