@@ -21,6 +21,9 @@ Module E := MetaRocq.Erasure.EAst.
 (* [subst] — used by [native_rec_body] to rewrite a single fixpoint's
    self-reference into a direct call to the enclosing constant. *)
 From MetaRocq.Erasure Require ELiftSubst.
+From MetaRocq.Erasure Require EPrimitive.
+From MetaRocq.Utils Require Show.
+From Stdlib.Strings Require Byte PrimStringAxioms.
 Module T := MetaRocq.Template.Ast.
 Module TUtil := MetaRocq.Template.AstUtils.
 Module EF := MetaRocq.Erasure.ErasureFunction.
@@ -50,6 +53,168 @@ Local Definition push_indent (n : nat) : PrettyPrinter unit :=
 
 Local Notation "a ^ b" := (a ++ b).
 
+(* Memory management of the printed program.  [ArenaMode] allocates every value
+   and closure in a bumpalo arena owned by [Program] and passes them as [&'a]
+   references, which are [Copy]; nothing is freed before the arena is dropped.
+   [RcMode] passes values as [Rc<..>] and closures as [Rc<dyn Fn ..>]; every
+   use of a variable clones it (one reference-count increment), a match borrows
+   its scrutinee and clones the fields it binds, and a closure clones the free
+   variables it captures.  The printed term helpers [__mk], [__borrow] and
+   [__app] and the [closure] method are defined by the preamble. *)
+Inductive rust_memory_mode := ArenaMode | RcMode.
+
+(* The de Bruijn indices of the variables free in [t] under [k] binders,
+   relative to the outside of those binders, with repetitions. *)
+Fixpoint free_rels (k : nat) (t : term) {struct t} : list nat :=
+  match t with
+  | tRel n => if (k <=? n)%nat then [n - k] else []
+  | tEvar _ l =>
+    (fix go (l : list term) : list nat :=
+       match l with
+       | [] => []
+       | t :: l => List.app (free_rels k t) (go l)
+       end) l
+  | tLambda _ b => free_rels (S k) b
+  | tLetIn _ v b => List.app (free_rels k v) (free_rels (S k) b)
+  | tApp u v => List.app (free_rels k u) (free_rels k v)
+  | tConstruct _ _ args =>
+    (fix go (l : list term) : list nat :=
+       match l with
+       | [] => []
+       | t :: l => List.app (free_rels k t) (go l)
+       end) args
+  | tCase _ d brs =>
+    List.app (free_rels k d)
+    ((fix go (l : list (list BasicAst.name * term)) : list nat :=
+       match l with
+       | [] => []
+       | (ctx, b) :: l => List.app (free_rels (#|ctx| + k) b) (go l)
+       end) brs)
+  | tProj _ c => free_rels k c
+  | tFix mfix _
+  | tCoFix mfix _ =>
+    (fix go (l : list (EAst.def term)) : list nat :=
+       match l with
+       | [] => []
+       | d :: l => List.app (free_rels (#|mfix| + k) (EAst.dbody d)) (go l)
+       end) mfix
+  | tLazy t
+  | tForce t => free_rels k t
+  | _ => []
+  end.
+
+(* A context entry is a variable name, or, for a fixpoint cell, an expression
+   [f.get().unwrap()] reading the cell [f]; [base_ident] returns the variable. *)
+Definition base_ident (s : string) : string :=
+  match str_split "." s with
+  | x :: _ => x
+  | [] => s
+  end.
+
+Definition is_plain_ident (s : string) : bool :=
+  bytestring.String.eqb (base_ident s) s.
+
+(* The uses of the variable [k] in [t] on one evaluation path, saturated at 2:
+   the uses of a match are those of its scrutinee plus those of its most
+   demanding branch, and a closure or a local fixpoint counts once per
+   closure it builds, whatever its body does with the variable. *)
+Definition sat (n : nat) : nat := Nat.min 2 n.
+
+Fixpoint occ (k : nat) (t : term) {struct t} : nat :=
+  match t with
+  | tRel n => if Nat.eqb n k then 1 else 0
+  | tEvar _ l => sat (fold_right (fun a acc => occ k a + acc) 0 l)
+  | tLambda _ b => Nat.min 1 (occ (S k) b)
+  | tLetIn _ v b => sat (occ k v + occ (S k) b)
+  | tApp u v => sat (occ k u + occ k v)
+  | tConstruct _ _ args => sat (fold_right (fun a acc => occ k a + acc) 0 args)
+  | tCase _ d brs =>
+    sat (occ k d + fold_right (fun br acc => Nat.max (occ (#|fst br| + k) (snd br)) acc) 0 brs)
+  | tProj _ c => occ k c
+  | tFix mfix _ | tCoFix mfix _ =>
+    sat (fold_right (fun d acc => Nat.min 1 (occ (#|mfix| + k) (EAst.dbody d)) + acc) 0 mfix)
+  | tLazy c | tForce c => occ k c
+  | tPrim _ => 2
+  | _ => 0
+  end.
+
+(* In Rc mode a variable that [t] uses at most once on every path is moved,
+   not cloned: its context entry carries the mark [!].  Rust's move checker
+   checks each printed program for a use after a move. *)
+Definition movable (k : nat) (t : term) : bool := Nat.leb (occ k t) 1.
+
+Definition is_moved (s : string) : bool :=
+  match s with
+  | bytestring.String.String Byte.x21 _ => true
+  | _ => false
+  end.
+
+(* A borrowed parameter's entry carries the mark [*]: the variable is a reference. *)
+Definition is_ref (s : string) : bool :=
+  match s with
+  | bytestring.String.String Byte.x2a _ => true
+  | _ => false
+  end.
+
+(* The mark [?]: the variable is owned, it is used more than once on some path, and
+   nothing after the current term uses it.  A [match] in tail position may then move
+   it in a branch, by [moved_in_branch_at_most_once] of [OccCorrect.v].  Only a [match]
+   and a [let] see this mark: [print_term] removes it for every other term. *)
+Definition is_tail (s : string) : bool :=
+  match s with
+  | bytestring.String.String Byte.x3f _ => true
+  | _ => false
+  end.
+
+Definition unmark (s : string) : string :=
+  match s with
+  | bytestring.String.String c r =>
+    match c with Byte.x21 | Byte.x2a | Byte.x3f => r | _ => s end
+  | _ => s
+  end.
+
+Definition demote (s : string) : string := if is_tail s then unmark s else s.
+
+(* The entries of a context after [v] has been evaluated, [v] at offset [off]: a
+   variable [v] uses has lost the mark [?], as [v] may hold a borrow of it. *)
+Definition tail_after (off : nat) (Γ : list string) (v : term) : list string :=
+  mapi (fun i e => if Nat.eqb (occ (i + off) v) 0 then e else demote e) Γ.
+
+(* The entries in a branch [t] that binds [nb] variables: [?] becomes moved where the
+   branch uses the variable at most once. *)
+Definition tail_in_branch (nb : nat) (t : term) (Γ : list string) : list string :=
+  mapi (fun i e => if andb (is_tail e) (movable (i + nb) t) then "!" ++ unmark e else e) Γ.
+
+(* The variables with the mark [?] that the branch does not use.  Dropping them on entry
+   leaves nothing to drop after a call in tail position. *)
+Definition tail_unused (nb : nat) (t : term) (Γ : list string) : list string :=
+  flat_map (fun '(i, e) =>
+              if andb (is_tail e) (Nat.eqb (occ (i + nb) t) 0) then [unmark e] else [])
+           (combine (seq 0 #|Γ|) Γ).
+
+(* Which arguments of a saturated call in tail position move their variable. The
+   variable has the mark [?] and the argument is the variable itself. Every other use
+   is the variable itself at an earlier position passed by value, printed as a clone
+   whose borrow ends at once, so that [f(x.clone(), x)] compiles and no use follows the
+   move: [last_use_no_later_use] of [OccCorrect.v]. *)
+Definition last_use_move (Γ : list string) (use_ref : nat -> bool) (args : list term) (i : nat) : bool :=
+  match nth_error args i with
+  | Some (tRel n) =>
+    match nth_error Γ n with
+    | Some e =>
+      andb (andb (andb (is_tail e) (negb (use_ref i)))
+        (forallb (fun a => Nat.eqb (occ n a) 0) (skipn (S i) args)))
+        (forallb (fun k =>
+                    match nth_error args k with
+                    | Some (tRel m) => orb (negb (Nat.eqb m n)) (negb (use_ref k))
+                    | Some a => Nat.eqb (occ n a) 0
+                    | None => true
+                    end) (seq 0 i))
+    | None => false
+    end
+  | _ => false
+  end.
+
 Section FixEnv.
 Context (Σ : Ex.global_env).
 Context (remaps : remaps).
@@ -58,9 +223,27 @@ Class RustPrintConfig :=
   { term_box_symbol : string;
     type_box_symbol : string;
     any_type_symbol : string;
-    print_full_names : bool (* use fully-qualified names as identifiers to avoid name clashes *)}.
+    print_full_names : bool (* use fully-qualified names as identifiers to avoid name clashes *);
+    memory_mode : rust_memory_mode;
+    (* In Rc mode: parameter [j] of constant [kn] is passed as a reference [&Rc<..>] *)
+    rc_borrowed : Kernames.kername -> nat -> bool }.
 
 Context `{RustPrintConfig}.
+
+Definition is_rc : bool :=
+  match memory_mode with
+  | RcMode => true
+  | ArenaMode => false
+  end.
+
+(* The context entry of a variable bound with body [t] at index [k]: marked as
+   moved when, in Rc mode, [t] uses it at most once on every path. *)
+Definition mark_entry (k : nat) (t : term) (x : string) : string :=
+  if is_rc then (if movable k t then "!" ++ x else "?" ++ x) else x.
+
+(* The bound on each type parameter of a function *)
+Definition ty_param_bound : string :=
+  if is_rc then ": Clone + 'a" else ": Copy".
 
 Import Kernames.
 
@@ -94,13 +277,25 @@ Definition clean_global_ident (s : string) : string :=
 
 (* Get identifier for a global constant function given its kername, without
    taking remappings into account *)
+(* A keyword is sanitized to a raw identifier [r#kw]; a module prefix makes it an
+   ordinary identifier, and [Mod_r#kw] would not be one. *)
+Definition strip_raw (s : string) : string :=
+  match s with
+  | bytestring.String.String c1 (bytestring.String.String c2 r) =>
+    match c1, c2 with Byte.x72, Byte.x23 => r | _, _ => s end
+  | _ => s
+  end.
+
+Definition full_name (kn : kername) : string :=
+  string_of_kername (fst kn, strip_raw (snd kn)).
+
 Definition const_global_ident_of_kername (kn : kername) :=
-  clean_global_ident (if print_full_names then (string_of_kername kn) else (snd kn)).
+  clean_global_ident (if print_full_names then full_name kn else (snd kn)).
 
 (* Get identifier for a global constant meant to be used as a type, without
    taking remappings into account. This is also used for [inductive]. *)
 Definition ty_const_global_ident_of_kername (kn : kername) :=
-  capitalize (clean_global_ident (if print_full_names then string_of_kername kn else (snd kn))).
+  capitalize (clean_global_ident (if print_full_names then full_name kn else (snd kn))).
 
 (* Get identifier for a global type alias taking remappings into account *)
 Definition get_ty_const_ident (name : kername) : _ :=
@@ -188,8 +383,8 @@ Import BasicAst.
 Definition fresh_ident (name : name) (Γ : list ident) : PrettyPrinter ident :=
   used_names <- get_used_names;;
   match name with
-  | nAnon => ret (fresh "x" (Γ ++ used_names))
-  | nNamed name => ret (fresh (clean_local_ident name) (Γ ++ used_names))
+  | nAnon => ret (fresh "x" (map unmark Γ ++ used_names))
+  | nNamed name => ret (fresh (clean_local_ident name) (map unmark Γ ++ used_names))
   end.
 
 Definition fresh_ty_arg_name (name : name) (Γ : list ident) : PrettyPrinter ident :=
@@ -198,6 +393,15 @@ Definition fresh_ty_arg_name (name : name) (Γ : list ident) : PrettyPrinter ide
   | nAnon => ret (fresh "a" (Γ ++ used_names))
   | nNamed name => ret (fresh (clean_local_ident name) (Γ ++ used_names))
   end.
+
+(* Rocq's primitive types have no declaration to print: a primitive integer is an
+   [i64] (its values are below 2^63) and a primitive string, an array of bytes, is
+   a byte slice. *)
+Definition prim_int_kn : kername :=
+  (MPfile ["PrimInt63"; "Int63"; "Cyclic"; "Numbers"; "Corelib"], "int").
+
+Definition prim_string_kn : kername :=
+  (MPfile ["PrimString"; "Strings"; "Corelib"], "string").
 
 Definition parenthesize_ty_app_arg (t : box_type) : bool :=
   match t with
@@ -210,10 +414,17 @@ Fixpoint print_type_aux (Γ : list ident) (t : box_type) (args : list (PrettyPri
   | TBox => append type_box_symbol
   | TAny => append any_type_symbol
   | TArr dom cod =>
-    append "&'a dyn Fn(";;
-    print_type_aux Γ dom [];;
-    append ") -> ";;
-    print_type_aux Γ cod []
+    if is_rc then
+      append "Rc<dyn Fn(";;
+      print_type_aux Γ dom [];;
+      append ") -> ";;
+      print_type_aux Γ cod [];;
+      append " + 'a>"
+    else
+      append "&'a dyn Fn(";;
+      print_type_aux Γ dom [];;
+      append ") -> ";;
+      print_type_aux Γ cod []
   | TApp head arg =>
     print_type_aux Γ head (print_type_aux Γ arg [] :: args)
   | TVar n =>
@@ -229,13 +440,16 @@ Fixpoint print_type_aux (Γ : list ident) (t : box_type) (args : list (PrettyPri
         (0 <? #|args|)%nat
         (monad_append_join (append ", ") args)
     else
-      append "&'a ";;
+      append (if is_rc then "Rc<" else "&'a ");;
       print_ind ind;;
       append "<";;
       monad_append_join (append ", ") (append "'a" :: args);;
-      append ">"
+      append ">";;
+      (if is_rc then append ">" else ret tt)
 
   | TConst name =>
+    if eq_kername name prim_int_kn then append "i64" else
+    if eq_kername name prim_string_kn then append "&'a [u8]" else
     append ((get_ty_const_ident name) ++ "<");;
     monad_append_join (append ", ") (append "'a" :: args);;
     append ">"
@@ -277,6 +491,8 @@ Fixpoint nrb_is_eta_args (doms : list box_type) (i : nat) (args : list term) : b
    eta-wrapped fix whose body captures an outer variable, or a fix applied to
    anything else) is returned unchanged and handled by [print_term]'s [tFix]
    closure-cell case.  [doms] lists the domain types of the outer lambdas. *)
+(* The eta case below is not specific to Rust (the typed Koka printer of Peregrine
+   has its own); it may belong in the middle end in the future. *)
 Definition native_rec_body (doms : list box_type) (kn : kername) (body : term) : term :=
   let fix strip (acc : list name) (b : term) : list name * term :=
     match b with
@@ -375,7 +591,7 @@ Definition print_constructor
 
     col <- get_indent;;
     push_indent (col + indent_size);;
-    append "self.alloc(";;
+    append (if is_rc then "__mk(" else "self.alloc(");;
     append_nl;;
     let head := print_ind ind;; append "::";; append (clean_global_ident ctor) in
     let final_args := append "PhantomData" :: args in
@@ -384,7 +600,127 @@ Definition print_constructor
     pop_indent
   end.
 
-Definition print_const (kn : kername) (args : list (PrettyPrinter unit)) : PrettyPrinter unit :=
+(* The body of a Rust byte string literal: every byte other than an ASCII letter,
+   digit or space is written as a hexadecimal escape. *)
+Definition hex_digit (n : nat) : string :=
+  nth n ["0"; "1"; "2"; "3"; "4"; "5"; "6"; "7"; "8"; "9"; "a"; "b"; "c"; "d"; "e"; "f"] "0".
+
+Fixpoint rust_bytes (s : string) : string :=
+  match s with
+  | String.EmptyString => ""
+  | String.String b r =>
+    let n := Byte.to_nat b in
+    let range lo hi := andb (Nat.leb lo n) (Nat.leb n hi) in
+    let plain := orb (range 32 32) (orb (range 48 57) (orb (range 65 90) (range 97 122))) in
+    (if plain then String.String b String.EmptyString
+     else "\x" ++ hex_digit (Nat.div n 16) ++ hex_digit (Nat.modulo n 16)) ++ rust_bytes r
+  end%nat.
+
+Definition print_prim (p : EPrimitive.prim_val term) : PrettyPrinter unit :=
+  match projT2 p with
+  | EPrimitive.primIntModel i => append (Show.string_of_prim_int i ++ "i64")
+  | EPrimitive.primStringModel s =>
+    let bytes := String.concat "" (map Show.char63_to_string (PrimStringAxioms.to_list s)) in
+    append ("&b""" ++ rust_bytes bytes ++ """[..]")
+  | _ => printer_fail "Cannot handle Rocq primitive floats and arrays yet"
+  end.
+
+(* A constant whose result type is erased, applied to more arguments than its type
+   has arrows, as the projection of an erased field is: the result is the box, and
+   the remaining arguments are terms of a total language, so they are dropped. *)
+Definition erased_result_arity (kn : kername) : option nat :=
+  match Ex.lookup_constant Σ kn with
+  | Some cst =>
+    let '(doms, cod) := decompose_arr (snd (Ex.cst_type cst)) in
+    match cod with
+    | TBox => Some #|doms|
+    | _ => None
+    end
+  | None => None
+  end.
+
+Fixpoint mentions_tvar (i : nat) (t : box_type) : bool :=
+  match t with
+  | TVar n => (n =? i)%nat
+  | TArr a b | TApp a b => orb (mentions_tvar i a) (mentions_tvar i b)
+  | _ => false
+  end.
+
+Fixpoint ty_args (t : box_type) : list box_type :=
+  match t with
+  | TApp h a => (ty_args h ++ [a])%list
+  | _ => []
+  end.
+
+Definition ctor_field_types (ind : inductive) (c : nat) : list box_type :=
+  match Ex.lookup_env Σ (inductive_mind ind) with
+  | Some (Ex.InductiveDecl mib) =>
+    match nth_error (Ex.ind_bodies mib) (inductive_ind ind) with
+    | Some oib =>
+      match nth_error (Ex.ind_ctors oib) c with
+      | Some (_, fields, _) => map snd fields
+      | None => []
+      end
+    | None => []
+    end
+  | _ => []
+  end.
+
+(* Whether an argument of type [dom] lets rustc infer the type variable [i].  A
+   constructor application only does so through the type parameters that its own
+   fields mention: [Left 0] says nothing about [B] in [Either A B], and
+   [Left (Left 0)] nothing about it in [Either (Either A B) C], which is why a field
+   whose type is a parameter is followed into the argument at that field.  The fuel
+   bounds that descent; running out says yes, which prints no type argument. *)
+Fixpoint determines_tvar_fuel (fuel : nat) (i : nat) (dom : box_type) (arg : term) : bool :=
+  andb (mentions_tvar i dom)
+  match fuel with
+  | 0 => true
+  | S fuel =>
+    match EAstUtils.decompose_app arg with
+    | (tConstruct ind c _, cargs) =>
+      match ty_args dom with
+      | [] => true
+      | targs =>
+        let fields := ctor_field_types ind c in
+        (* erasure may keep the parameters as leading arguments of the constructor *)
+        let values := skipn (#|cargs| - #|fields|) cargs in
+        existsb id (mapi (fun p targ =>
+          andb (mentions_tvar i targ)
+               (existsb (fun '(field, value) =>
+                           andb (mentions_tvar p field)
+                                match field with
+                                | TVar q => determines_tvar_fuel fuel i targ value
+                                | _ => true
+                                end)
+                        (combine fields values))) targs)
+      end
+    | _ => true
+    end
+  end.
+
+Definition determines_tvar : nat -> box_type -> term -> bool := determines_tvar_fuel 16.
+
+(* The type arguments of a call, printed only when rustc cannot infer one of them.
+   Erasure removed the explicit type argument, and a type variable that occurs
+   neither in the result type nor in what an argument determines has no effect on
+   the program, so any type does; [()] satisfies the [Copy] bound of the parameter. *)
+Definition call_turbofish (kn : kername) (args : list term) : string :=
+  match Ex.lookup_constant Σ kn, remap_constant remaps kn, remap_inline_constant remaps kn with
+  | Some cst, None, None =>
+    let '(tvars, ty) := Ex.cst_type cst in
+    let '(doms, cod) := decompose_arr ty in
+    let undetermined i :=
+        andb (negb (mentions_tvar i cod))
+             (negb (existsb (fun '(d, a) => determines_tvar i d a) (combine doms args))) in
+    let flags := mapi (fun i _ => undetermined i) tvars in
+    if orb (Nat.ltb #|args| #|doms|) (negb (existsb id flags)) then ""
+    else "::<" ++ String.concat ", " (map (fun u : bool => if u then "()" else "_") flags) ++ ">"
+  | _, _, _ => ""
+  end.
+
+Definition print_const_turbofish (turbofish : string) (kn : kername) (args : list (PrettyPrinter unit))
+  : PrettyPrinter unit :=
   num_inline_args <- get_num_inline_args kn;;
   let (expr, num_inline_args) :=
       if (#|args| <? num_inline_args)%nat then
@@ -393,21 +729,61 @@ Definition print_const (kn : kername) (args : list (PrettyPrinter unit)) : Prett
       else
         (match remap_inline_constant remaps kn with
          | Some s => s
-         | None => "self." ^ const_global_ident_of_kername kn
+         | None => "self." ^ const_global_ident_of_kername kn ^ turbofish
          end, num_inline_args) in
   head_col <- get_indent;;
   let head := append expr in
   let args_in_head := firstn num_inline_args args in
   let args_in_tail := skipn num_inline_args args in
+  (if is_rc then append (String.concat "" (repeat "__app(" #|args_in_tail|)) else ret tt);;
   print_app head args_in_head;;
   push_indent (head_col + indent_size);;
   let it_app a :=
-      append "(";;
+      append (if is_rc then "," else "(");;
       append_nl;;
       a;;
       append ")" in
   monad_append_concat (map it_app args_in_tail);;
   pop_indent.
+
+Definition print_const := print_const_turbofish "".
+
+Definition needs_block (t : term) : bool :=
+  match t with
+  | tLetIn _ _ _
+  | tFix _ _ => true
+  | _ => false
+  end.
+
+(* The variables that a closure [tLambda na body] in context [Γ] captures; in
+   Rc mode they are cloned before the [move] closure takes them.  A fixpoint
+   variable is captured as its cell.  The entries of [Γ] are distinct, so
+   distinct indices give distinct variables. *)
+Definition lambda_captures (Γ : list ident) (body : term) : list ident :=
+  flat_map (fun i => match nth_error Γ i with
+                     | Some na => [base_ident na]
+                     | None => []
+                     end)
+           (nodup Nat.eq_dec (free_rels 1 body)).
+
+(* An inductive with an unnamed type variable that no constructor field mentions is
+   taken for a family indexed by a type, as [GExp : Set -> Type] with
+   [nat : Nat -> GExp Nat] and [bool : Bool -> GExp Bool]: erasure loses the index,
+   and the branches of a match have different Rust types although each has the type
+   the match asks for in the source.  Such a branch is printed under [__cast], the
+   counterpart of OCaml's [Obj.magic]; the program's typing in Rocq guarantees that
+   the two types agree.  Dearging resets [ind_npars], so the printer tells an index
+   from a parameter by its binder: a parameter has a name, and a phantom parameter
+   must get no cast, because all branches have one type and a cast hides it from
+   rustc's inference.  An index with a named binder gets no cast either, and rustc
+   then rejects the program. *)
+Definition is_type_family (oib : Ex.one_inductive_body) : bool :=
+  let fields := flat_map (fun '(_, fs, _) => map snd fs) (Ex.ind_ctors oib) in
+  existsb id (mapi (fun i tv =>
+    andb (Ex.tvar_is_arity tv)
+         (andb (match Ex.tvar_name tv with BasicAst.nAnon => true | _ => false end)
+               (negb (existsb (mentions_tvar i) fields))))
+    (Ex.ind_type_vars oib)).
 
 Section print_term.
   Context (print_term : list ident -> term -> PrettyPrinter unit).
@@ -416,12 +792,61 @@ Section print_term.
     col <- get_indent;;
     push_indent col;;
 
+    let rem := remap_inductive remaps ind in
+    (* In Rc mode a match on an extracted inductive borrows the [Rc], and the
+       branch holds references to the fields it binds *)
+    let rc_ind := match rem with
+                  | Some _ => false
+                  | None => is_rc
+                  end in
+    (* A scrutinee that is a moved variable is matched by value: [__own] takes
+       the cell, or a shallow copy when it is shared, and the branch owns the
+       fields.  Otherwise the match borrows the cell. *)
+    let own := match discr with
+               | tRel n => match nth_error Γ n with
+                           | Some name => andb rc_ind (is_moved name)
+                           | None => false
+                           end
+               | _ => false
+               end in
+    let borrow := andb rc_ind (negb own) in
+
     append "match ";;
-    print_term Γ discr;;
+    (if own then
+       match discr with
+       | tRel n =>
+         match nth_error Γ n with
+         | Some name => append ("__own(" ++ unmark name ++ ")")
+         | None => printer_fail ("unbound tRel " ++ string_of_nat n)
+         end
+       | _ => printer_fail "unreachable"
+       end
+     else if borrow then
+       append "__borrow(";;
+       match discr with
+       | tRel n =>
+         match nth_error Γ n with
+         | Some name =>
+           if is_ref name then append (unmark name)
+           else if is_plain_ident name then append ("&" ++ unmark name)
+           else (append "&";; print_term (map demote Γ) discr)
+         | None => printer_fail ("unbound tRel " ++ string_of_nat n)
+         end
+       | _ =>
+         append "&";;
+         if needs_block discr then
+           append "{ ";; print_term (map demote Γ) discr;; append " }"
+         else
+           print_term (map demote Γ) discr
+       end;;
+       append ")"
+     else
+       print_term (map demote Γ) discr);;
     append " {";;
 
     oib <- wrap_result (lookup_ind_decl ind) id;;
     let rem := remap_inductive remaps ind in
+    let family := is_type_family oib in
 
     push_indent (col + indent_size);;
     (fix print_cases
@@ -441,7 +866,7 @@ Section print_term.
            append s
 
          | None =>
-           append "&";;
+           (if own then ret tt else append "&");;
            print_ind ind;;
            append "::";;
            append (clean_global_ident ctor_name)
@@ -459,11 +884,27 @@ Section print_term.
             lifetimes. That gives another underscores. *)
               let nextra := if rem then npars else S npars in
               let extra := List.repeat "_" nextra in
-              let args := (extra ++ (rev args))%list in
+              let bound := rev args in
+              let nb := #|bound| in
+              let pats := if borrow then map (fun a => "ref " ^ a) bound else bound in
+              let args := (extra ++ pats)%list in
               print_parenthesized (0 <? #|args|)%nat (append_join ", " args);;
               append " => {";;
               append_nl ;;
-              print_term Γ t
+              (* a borrowed field stays a reference: a use that needs ownership
+                 clones it, and a use as a borrowed argument or a scrutinee does
+                 not touch its reference count *)
+              let marked := if borrow
+                            then map (fun a => "*" ++ a) bound
+                            else mapi (fun i a => mark_entry (nb - 1 - i) t a) bound in
+              let outer := tail_after 0 (skipn nb Γ) discr in
+              monad_append_concat
+                (map (fun x => append ("drop(" ^ x ^ ");");; append_nl) (tail_unused nb t outer));;
+              let Γ' := (List.rev marked ++ tail_in_branch nb t outer)%list in
+              (if family then
+                 append "__cast({ ";; print_term Γ' t;; append " })"
+               else
+                 print_term Γ' t)
             | name :: bctx0 =>
               name <- fresh_ident name Γ;;
               print_branch bctx0 (name :: args) (name :: Γ)
@@ -529,19 +970,41 @@ Section print_term.
     pop_indent.
 End print_term.
 
-Definition needs_block (t : term) : bool :=
-  match t with
-  | tLetIn _ _ _
-  | tFix _ _ => true
-  | _ => false
+(* An argument at a borrowed position: a variable is passed by reference without
+   a clone (a borrowed parameter or a fixpoint cell already is a reference), any
+   other argument is a temporary that lives for the call. *)
+Definition borrowed_arg (Γ : list ident) (a : term) (printed : PrettyPrinter unit)
+  : PrettyPrinter unit :=
+  match a with
+  | tRel n =>
+    match nth_error Γ n with
+    | Some e =>
+      if is_ref e then append (unmark e)
+      else if is_plain_ident e then append ("&" ++ unmark e)
+      else append e
+    | None => printer_fail ("unbound tRel " ++ string_of_nat n)
+    end
+  | _ => append "&(";; printed;; append ")"
   end.
 
 Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit :=
+  let Γ_tail := Γ in
+  let Γ := match t with
+           | tCase _ _ _ | tLetIn _ _ _ => Γ
+           | _ => map demote Γ
+           end in
   match t with
   | tBox => append term_box_symbol
   | tRel n =>
     match nth_error Γ n with
-    | Some name => append name
+    | Some name =>
+      if is_rc then
+        if is_moved name then append (unmark name) else
+        if is_ref name then append ("Clone::clone(" ++ unmark name ++ ")") else
+        (* A fixpoint entry [f.get().unwrap()] is already a reference *)
+        append ("Clone::clone(" ++ (if is_plain_ident name then "&" else "") ++ name ++ ")")
+      else
+        append name
     | None => printer_fail ("unbound tRel " ++ string_of_nat n)
     end
   | tVar ident => printer_fail ("tVar " ++ ident)
@@ -550,15 +1013,30 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
     name <- fresh_ident name Γ;;
     col <- get_indent;;
     push_indent col;;
+    (* In Rc mode the [move] closure takes its own clone of each captured
+       variable, so that the variable stays available outside *)
+    let caps := if is_rc then lambda_captures (map (fun e => if is_moved e then "" else e) Γ) t else [] in
+    let caps := filter (fun c => negb (bytestring.String.eqb c "")) caps in
+    (match caps with
+     | [] => ret tt
+     | _ => append ("{ " ++ String.concat ""
+                      (map (fun c => if is_ref c
+                                     then "let " ++ unmark c ++ " = Clone::clone(" ++ unmark c ++ "); "
+                                     else "let " ++ c ++ " = Clone::clone(&" ++ c ++ "); ") caps))
+     end);;
     append ("self.closure(move |" ++ name ++ "| {");;
 
     push_indent (col + indent_size);;
     append_nl;;
-    let Γ := name :: Γ in
+    let Γ := mark_entry 0 t name :: map unmark Γ in
     print_term Γ t;;
     pop_indent;;
     append_nl;;
     append "})";;
+    (match caps with
+     | [] => ret tt
+     | _ => append " }"
+     end);;
     pop_indent
 
   | tLetIn na val body =>
@@ -571,7 +1049,7 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
 
     push_indent (col + indent_size);;
     append_nl;;
-    print_term Γ val;;
+    print_term (map demote Γ) val;;
     pop_indent;;
 
     (if needs_block val then
@@ -582,30 +1060,74 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
 
     append_nl;;
 
-    print_term (name :: Γ) body;;
+    print_term (mark_entry 0 body name :: tail_after 0 Γ val) body;;
     pop_indent
 
   | tApp head arg =>
+    (* [print_term] on the last argument is computed once: a second call would
+       double the work at every level of a nested application, as in a [nat]
+       literal [S (S (S ..))], because extracted code is call by value *)
+    let last_printed :=
+        if needs_block arg then
+          append "{ ";; print_term Γ arg;; append " }"
+        else
+          print_term Γ arg in
 
-    (fix f head args_printed {struct head} :=
+    (fix f head args_printed args_borrowed {struct head} :=
        match head with
        | tApp head arg =>
          let printed_arg :=
              (if needs_block arg then append "{ " else ret tt);;
              print_term Γ arg;;
              if needs_block arg then append " }" else ret tt in
-         f head (printed_arg :: args_printed)
+         f head (printed_arg :: args_printed) (borrowed_arg Γ arg printed_arg :: args_borrowed)
 
        | tConstruct ind i [] => print_constructor ind i args_printed
        | tConstruct ind i (_ :: _) =>
            printer_fail ("Costructors-as-blocks is not supported: "
                          ^ (string_of_kername ind.(inductive_mind)))
 
-       | tConst kn => print_const kn args_printed
+       | tConst kn =>
+         (* a saturated call passes a borrowed position by reference *)
+         n <- get_num_inline_args kn;;
+         let use_ref j := andb is_rc (andb (Nat.leb n #|args_printed|)
+                                           (andb (Nat.ltb j n) (rc_borrowed kn j))) in
+         let args := snd (EAstUtils.decompose_app t) in
+         let moved_arg j p :=
+           match nth_error args j with
+           | Some (tRel n) =>
+             match nth_error Γ n with
+             | Some e => append (unmark e)
+             | None => p
+             end
+           | _ => p
+           end in
+         let printed := mapi (fun j '(p, b) =>
+                                if use_ref j then b
+                                else if andb is_rc (last_use_move Γ_tail use_ref args j)
+                                     then moved_arg j p else p)
+                             (combine args_printed args_borrowed) in
+         match erased_result_arity kn with
+         | Some m =>
+           if (m <? #|args_printed|)%nat then print_const kn (firstn m printed)
+           else print_const kn printed
+         | None =>
+           print_const_turbofish (call_turbofish kn (snd (EAstUtils.decompose_app t))) kn printed
+         end
+
+       | tBox => append term_box_symbol
 
        | _ =>
          (* For other heads we might need to guide type inference by repeatedly
             applying a hint function *)
+         if is_rc then
+           (* [__app(f, a)] calls the [Rc<dyn Fn>] [f] and fixes its type *)
+           append (String.concat "" (repeat "__app(" #|args_printed|));;
+           (if needs_block head then append "{ " else ret tt);;
+           print_term Γ head;;
+           (if needs_block head then append " }" else ret tt);;
+           monad_append_concat (map (fun a => append ", ";; a;; append ")") args_printed)
+         else
          append (String.concat "" (repeat "hint_app(" #|args_printed|));;
          (if needs_block head then append "{ " else ret tt);;
          print_term Γ head;;
@@ -615,10 +1137,7 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
            (fun pref a => append pref;; a;; append ")";; ret ")(") args_printed "(";;
          ret tt
 
-       end) head [if needs_block arg then
-                    append "{ ";; print_term Γ arg;; append " }"
-                  else
-                    print_term Γ arg]
+       end) head [last_printed] [borrowed_arg Γ arg last_printed]
 
   | tConst kn => print_const kn []
   | tConstruct ind i [] => print_constructor ind i []
@@ -663,7 +1182,10 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
                first closure or find a better way to handle this. *)
             na <- fresh_ident (EAst.dname d) Γ;;
             push_use na;;
-            append ("let " ++ na ++ " = self.alloc(std::cell::Cell::new(None));");;
+            (* In Rc mode the cell is an [Rc<OnceCell<..>>] that each closure
+               clones; the closures and the cell form a cycle, which leaks *)
+            append ("let " ++ na ++ (if is_rc then " = Rc::new(std::cell::OnceCell::new());"
+                                     else " = self.alloc(std::cell::Cell::new(None));"));;
             append_nl;;
             ret ((bytestring.String.append na ".get().unwrap()") :: Γ, na :: cells))
          defs (Γ, []);;
@@ -673,11 +1195,11 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
     (* Print closures. *)
     monad_fold_left
       (fun _ '(print_def, cell) =>
-         append (cell ++ ".set(Some(");;
+         append (if is_rc then "let _ = " ++ cell ++ ".set(" else cell ++ ".set(Some(");;
          push_indent (col + indent_size);;
          append_nl;;
          print_def;;
-         append "));";;
+         append (if is_rc then ");" else "));");;
          pop_indent;;
          append_nl)
       (combine
@@ -685,14 +1207,17 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
          cells)
       tt;;
 
-    append ((nth i cells "") ++ ".get().unwrap()");;
+    (if is_rc then
+       append ("Clone::clone(" ++ (nth i cells "") ++ ".get().unwrap())")
+     else
+       append ((nth i cells "") ++ ".get().unwrap()"));;
     pop_indent
 
   | tProj (mkProjection ind pars c) t =>
     printer_fail ("unhandled tProj on " ^ (string_of_kername (inductive_mind ind)))
 
   | tCoFix _ _ => printer_fail "Cannot handle tCoFix yet"
-  | tPrim _ => printer_fail "Cannot handle Rocq primitive types yet"
+  | tPrim p => print_prim p
   | tLazy _ => printer_fail "Cannot handle lazy yet"
   | tForce _ => printer_fail "Cannot handle force yet"
   end.
@@ -722,20 +1247,30 @@ Definition print_constant
       append ("fn " ++ rname);;
       print_parenthesized_with
         "<" ">" (0 <? #|Γty|)%nat
-        (append_join ", " (map (fun na => na ++ ": Copy") Γty));;
+        (append_join ", " (map (fun na => na ++ ty_param_bound) Γty));;
       append "(&'a self";;
 
       (* Native recursion: rewrite a single fixpoint's self-reference to a
          direct call to this constant, so recursion compiles to a native
          recursive [fn] rather than a heap [Cell<Option<&dyn Fn>>]. *)
       let body := native_rec_body (fst (decompose_arr ty)) kn body in
-      (fix print_top Γ body ty :=
+      (fix print_top j Γ body ty :=
          match body, ty with
          | tLambda na body, TArr dom cod =>
            na <- fresh_ident na Γ;;
-           append (", " ++ na ++ ": ");;
+           let brw := andb is_rc (rc_borrowed kn j) in
+           append (", " ++ na ++ (if brw then ": &" else ": "));;
            print_type Γty dom;;
-           print_top (na :: Γ) body cod
+           (* the parameters are the leading lambdas this loop peels, not closures *)
+           let occ_top := fix occ_top k t ty :=
+                 match t, ty with
+                 | tLambda _ b, TArr _ cod => occ_top (S k) b cod
+                 | _, _ => occ k t
+                 end in
+           let na' := if brw then "*" ++ na
+                      else if is_rc then (if Nat.leb (occ_top 0 body cod) 1 then "!" ++ na else "?" ++ na)
+                      else na in
+           print_top (S j) (na' :: Γ) body cod
          | _, _ =>
            append ") -> ";;
            print_type Γty ty;;
@@ -750,7 +1285,7 @@ Definition print_constant
            pop_indent;;
            append_nl;;
            append "}"
-         end) [] body ty
+         end) 0 [] body ty
   end;;
 
   (* Print curried version if there were inlined args *)
@@ -760,7 +1295,7 @@ Definition print_constant
      append ("fn " ++ rname ++ "__curried");;
      print_parenthesized_with
        "<" ">" (0 <? #|Γty|)%nat
-       (append_join ", " (map (fun na => na ++ ": Copy") Γty));;
+       (append_join ", " (map (fun na => na ++ ty_param_bound) Γty));;
      append "(&'a self) -> ";;
      print_type Γty ty;;
      append " {";;
@@ -952,8 +1487,10 @@ Definition print_program : PrettyPrinter unit :=
   push_indent (sig_col + indent_size);;
 
   append "struct Program {";;
-  append_nl;;
-  append "__alloc: bumpalo::Bump,";;
+  (* In Rc mode the program has no state *)
+  (if is_rc then ret tt else
+     append_nl;;
+     append "__alloc: bumpalo::Bump,");;
 
   pop_indent;;
   append_nl;;
@@ -973,8 +1510,9 @@ Definition print_program : PrettyPrinter unit :=
   append "Program {";;
 
   push_indent (sig_col + 2*indent_size);;
-  append_nl;;
-  append "__alloc: bumpalo::Bump::new(),";;
+  (if is_rc then ret tt else
+     append_nl;;
+     append "__alloc: bumpalo::Bump::new(),");;
 
   pop_indent;;
   append_nl;;

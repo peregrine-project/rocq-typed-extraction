@@ -19,7 +19,9 @@ Local Instance RustConfig : RustPrintConfig :=
   {| term_box_symbol := "()";
      type_box_symbol := "()";
      any_type_symbol := "()";
-     print_full_names := false |}.
+     print_full_names := false;
+     memory_mode := ArenaMode;
+     rc_borrowed := fun _ _ => false |}.
 
 Definition default_attrs : ind_attr_map := fun _ => "#[derive(Debug, Clone)]".
 
@@ -446,6 +448,17 @@ Module SafeHead.
   Proof. vm_compute. reflexivity. Qed.
 
 End SafeHead.
+
+(** Printing an application prints each argument once. Printing one twice takes
+    time exponential in the depth of the nesting, here that of a [nat] literal. *)
+Module LargeLiteral.
+  Definition large_literal : nat := 40.
+  MetaRocq Quote Recursively Definition large_literal_p := large_literal.
+
+  Example large_literal_test :
+    match extract large_literal_p with Ok _ => True | Err _ => False end.
+  Proof. timeout 60 vm_compute. exact I. Qed.
+End LargeLiteral.
 
 (** A fixpoint applied to the innermost lambdas only, the shape of [app] when the
     constant is not dearged, becomes a native recursive function. *)

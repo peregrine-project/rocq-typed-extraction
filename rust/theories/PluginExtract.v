@@ -116,6 +116,12 @@ Local Instance plugin_extract_preamble : Preamble :=
 "";
 "fn hint_app<TArg, TRet>(f: &dyn Fn(TArg) -> TRet) -> &dyn Fn(TArg) -> TRet {";
 "  f";
+"}";
+"";
+"fn __cast<S, T>(x: S) -> T {";
+"  let y = unsafe { std::mem::transmute_copy::<S, T>(&x) };";
+"  std::mem::forget(x);";
+"  y";
 "}" ];
 program_preamble := [
 "fn alloc<T>(&'a self, t: T) -> &'a T {";
@@ -131,7 +137,9 @@ Instance RustConfig : RustPrintConfig :=
   {| term_box_symbol := "()";
      type_box_symbol := "()";
      any_type_symbol := "()";
-     print_full_names := true |}.
+     print_full_names := true;
+     memory_mode := ArenaMode;
+     rc_borrowed := fun _ _ => false |}.
 
 Definition default_attrs : ind_attr_map := fun _ => "#[derive(Debug, Clone)]".
 
