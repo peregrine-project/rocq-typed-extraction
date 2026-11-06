@@ -21,6 +21,9 @@ Module E := MetaRocq.Erasure.EAst.
 (* [subst] — used by [native_rec_body] to rewrite a single fixpoint's
    self-reference into a direct call to the enclosing constant. *)
 From MetaRocq.Erasure Require ELiftSubst.
+From MetaRocq.Erasure Require EPrimitive.
+From MetaRocq.Utils Require Show.
+From Stdlib.Strings Require Byte PrimStringAxioms.
 Module T := MetaRocq.Template.Ast.
 Module TUtil := MetaRocq.Template.AstUtils.
 Module EF := MetaRocq.Erasure.ErasureFunction.
@@ -49,6 +52,194 @@ Local Definition push_indent (n : nat) : PrettyPrinter unit :=
   PrettyPrinterMonad.push_indent (Nat.min n max_indent).
 
 Local Notation "a ^ b" := (a ++ b).
+
+(* rustc must infer the type parameters of a generic function at each call. A
+   constructor application determines the type parameters that occur in the
+   fields of the constructor, and its PhantomData argument determines none. A
+   type parameter of an inductive that occurs in no field (a phantom
+   parameter), or only as a phantom parameter of an inductive, is therefore
+   undetermined at a call such as [fromProxy (proxy nat)] for
+   [Inductive Proxy (A : Type) := proxy : Proxy A].
+   [prune_type_params] removes these parameters from the inductives and the
+   type aliases, except the index of an inductive family, and removes the
+   corresponding arguments from all types. It also removes each type parameter
+   of a constant that no longer occurs in the constant's type after this
+   removal. *)
+Section PruneTypeParams.
+Context (remaps : remaps).
+
+Import Kernames.
+
+(* Masks of the type parameters of the inductives and the type aliases. As in
+   the dearging masks, [true] marks a parameter to remove. A declaration
+   without a mask keeps all its parameters. *)
+Record type_param_masks :=
+  { ind_param_masks : list (inductive * bitmask);
+    alias_param_masks : list (kername * bitmask) }.
+
+Definition head_param_mask (ms : type_param_masks) (hd : box_type) : bitmask :=
+  match hd with
+  | TInd ind =>
+    match find (fun '(ind', _) => eq_inductive_def ind ind') (ind_param_masks ms) with
+    | Some (_, mask) => mask
+    | None => []
+    end
+  | TConst kn =>
+    match find (fun '(kn', _) => eq_kername kn kn') (alias_param_masks ms) with
+    | Some (_, mask) => mask
+    | None => []
+    end
+  | _ => []
+  end.
+
+(* Whether [TVar n] occurs in [t] applied to arguments, outside the removed
+   arguments. [args] says for each argument whether [TVar n] occurs in it. *)
+Fixpoint occurs_kept (ms : type_param_masks) (n : nat) (t : box_type) (args : list bool) : bool :=
+  match t with
+  | TApp hd arg => occurs_kept ms n hd (occurs_kept ms n arg [] :: args)
+  | TArr dom cod => occurs_kept ms n dom [] || occurs_kept ms n cod [] || existsb id args
+  | TVar m => Nat.eqb n m || existsb id args
+  | TInd _
+  | TConst _ => existsb id (masked (head_param_mask ms t) args)
+  | TBox
+  | TAny => existsb id args
+  end.
+
+(* The type parameters of a declaration that occur in none of [tys] *)
+Definition unused_params (ms : type_param_masks) (n : nat) (tys : list box_type) : bitmask :=
+  map (fun i => negb (existsb (fun t => occurs_kept ms i t []) tys)) (seq 0 n).
+
+Definition all_ctor_field_types (oib : Ex.one_inductive_body) : list box_type :=
+  flat_map (fun '(_, fields, _) => map snd fields) (Ex.ind_ctors oib).
+
+(* One step of the computation of the masks: a parameter stays removed if it
+   occurs in no field (or alias body) outside the parameters removed so far *)
+Definition update_param_masks (Σ : Ex.global_env) (ms : type_param_masks) : type_param_masks :=
+  let update mask unused := map (fun '(a, b) => andb a b) (combine mask unused) in
+  {| ind_param_masks :=
+       map (fun '(ind, mask) =>
+              match Ex.lookup_inductive Σ ind with
+              | Some oib => (ind, update mask (unused_params ms #|mask| (all_ctor_field_types oib)))
+              | None => (ind, mask)
+              end) (ind_param_masks ms);
+     alias_param_masks :=
+       map (fun '(kn, mask) =>
+              match Ex.lookup_env Σ kn with
+              | Some (Ex.TypeAliasDecl (Some (_, bt))) => (kn, update mask (unused_params ms #|mask| [bt]))
+              | _ => (kn, mask)
+              end) (alias_param_masks ms) |}.
+
+Definition count_removed_params (ms : type_param_masks) : nat :=
+  fold_left (fun n '(_, mask) => n + count_ones mask) (ind_param_masks ms) 0
+  + fold_left (fun n '(_, mask) => n + count_ones mask) (alias_param_masks ms) 0.
+
+(* An index of an inductive family: an arity type variable with no name, which
+   dearging leaves in place of the index.  It is kept, because #24 casts a
+   branch of a match on such a family to the index's type. *)
+Definition is_family_index (tv : Ex.type_var_info) : bool :=
+  andb (Ex.tvar_is_arity tv)
+       (match Ex.tvar_name tv with BasicAst.nAnon => true | _ => false end).
+
+(* Start from removing every parameter of an inductive or a type alias that is
+   not remapped, except the indices of a family, and keep the parameters that
+   occur outside the removed ones until no mask changes. Each step that changes a mask keeps one more
+   parameter, so [count_removed_params] steps suffice. *)
+Definition type_param_masks_of (Σ : Ex.global_env) : type_param_masks :=
+  let all_removed n := repeat true n in
+  let init :=
+      {| ind_param_masks :=
+           flat_map (fun '(kn, _, decl) =>
+                       match decl with
+                       | Ex.InductiveDecl mib =>
+                         mapi (fun i oib =>
+                                 let ind := mkInd kn i in
+                                 match remap_inductive remaps ind with
+                                 | Some _ => (ind, [])
+                                 | None => (ind, map (fun tv => negb (is_family_index tv)) (ind_type_vars oib))
+                                 end) (Ex.ind_bodies mib)
+                       | _ => []
+                       end) Σ;
+         alias_param_masks :=
+           flat_map (fun '(kn, _, decl) =>
+                       match decl, remap_constant remaps kn, remap_inline_constant remaps kn with
+                       | Ex.TypeAliasDecl (Some (tvars, _)), None, None => [(kn, all_removed #|tvars|)]
+                       | _, _, _ => []
+                       end) Σ |} in
+  let fix go fuel ms :=
+      match fuel with
+      | 0 => ms
+      | S fuel =>
+        let ms' := update_param_masks Σ ms in
+        if Nat.eqb (count_removed_params ms') (count_removed_params ms) then ms
+        else go fuel ms'
+      end in
+  go (S (count_removed_params init)) init.
+
+(* The type parameter [i] of a declaration whose parameters [mask] removes;
+   a removed parameter does not occur outside removed arguments *)
+Definition rename_type_param (mask : bitmask) (i : nat) : box_type :=
+  if has_bit i mask then TAny else TVar (i - count_ones (firstn i mask)).
+
+(* Remove the arguments that the masks remove from [t] applied to [args], and
+   rename its type parameters by [rename] *)
+Fixpoint prune_type
+         (ms : type_param_masks)
+         (rename : nat -> box_type)
+         (t : box_type)
+         (args : list box_type) : box_type :=
+  match t with
+  | TApp hd arg => prune_type ms rename hd (prune_type ms rename arg [] :: args)
+  | TArr dom cod => mkTApps (TArr (prune_type ms rename dom []) (prune_type ms rename cod [])) args
+  | TVar i => mkTApps (rename i) args
+  | TInd _
+  | TConst _ => mkTApps t (masked (head_param_mask ms t) args)
+  | TBox
+  | TAny => mkTApps t args
+  end.
+
+Definition prune_one_inductive_body
+           (ms : type_param_masks)
+           (mask : bitmask)
+           (oib : Ex.one_inductive_body) : Ex.one_inductive_body :=
+  let prune t := prune_type ms (rename_type_param mask) t [] in
+  {| Ex.ind_name := Ex.ind_name oib;
+     Ex.ind_propositional := Ex.ind_propositional oib;
+     Ex.ind_kelim := Ex.ind_kelim oib;
+     ind_type_vars := masked mask (ind_type_vars oib);
+     Ex.ind_ctors := map (fun '(name, fields, arity) =>
+                         (name, map (fun '(na, t) => (na, prune t)) fields, arity))
+                      (Ex.ind_ctors oib);
+     Ex.ind_projs := map (fun '(name, t) => (name, prune t)) (Ex.ind_projs oib) |}.
+
+Definition prune_decl
+           (ms : type_param_masks)
+           (kn : kername)
+           (decl : Ex.global_decl) : Ex.global_decl :=
+  match decl with
+  | Ex.ConstantDecl cst =>
+    let '(tvars, ty) := Ex.cst_type cst in
+    let mask := unused_params ms #|tvars| [ty] in
+    Ex.ConstantDecl {| Ex.cst_type := (masked mask tvars, prune_type ms (rename_type_param mask) ty []);
+                    Ex.cst_body := Ex.cst_body cst |}
+  | Ex.InductiveDecl mib =>
+    Ex.InductiveDecl
+      {| Ex.ind_finite := Ex.ind_finite mib;
+         Ex.ind_npars := Ex.ind_npars mib;
+         Ex.ind_bodies := mapi (fun i oib =>
+                               prune_one_inductive_body
+                                 ms (head_param_mask ms (TInd (mkInd kn i))) oib)
+                            (Ex.ind_bodies mib) |}
+  | Ex.TypeAliasDecl (Some (tvars, bt)) =>
+    let mask := head_param_mask ms (TConst kn) in
+    Ex.TypeAliasDecl (Some (masked mask tvars, prune_type ms (rename_type_param mask) bt []))
+  | Ex.TypeAliasDecl None => decl
+  end.
+
+Definition prune_type_params (Σ : Ex.global_env) : Ex.global_env :=
+  let ms := type_param_masks_of Σ in
+  map (fun '(kn, has_deps, decl) => (kn, has_deps, prune_decl ms kn decl)) Σ.
+
+End PruneTypeParams.
 
 Section FixEnv.
 Context (Σ : Ex.global_env).
@@ -199,6 +390,20 @@ Definition fresh_ty_arg_name (name : name) (Γ : list ident) : PrettyPrinter ide
   | nNamed name => ret (fresh (clean_local_ident name) (Γ ++ used_names))
   end.
 
+(* Rocq's primitive types have no declaration to print: a primitive integer is an
+   [i64] (its values are below 2^63) and a primitive string, an array of bytes, is
+   a byte slice.  The [i64] representation fixes an invariant that every remap of
+   a PrimInt63 operation must keep: values stay in [0, 2^63), arithmetic wraps
+   modulo 2^63 (Rust's [+] on [i64] panics on overflow in debug builds and wraps
+   modulo 2^64 in release builds), and [lts], [asr] and the other signed
+   operations read bit 62 as the sign.  An operation without a remap is an axiom
+   without a function, which rustc rejects. *)
+Definition prim_int_kn : kername :=
+  (MPfile ["PrimInt63"; "Int63"; "Cyclic"; "Numbers"; "Corelib"], "int").
+
+Definition prim_string_kn : kername :=
+  (MPfile ["PrimString"; "Strings"; "Corelib"], "string").
+
 Definition parenthesize_ty_app_arg (t : box_type) : bool :=
   match t with
   | TApp _ _ => true
@@ -236,6 +441,8 @@ Fixpoint print_type_aux (Γ : list ident) (t : box_type) (args : list (PrettyPri
       append ">"
 
   | TConst name =>
+    if eq_kername name prim_int_kn then append "i64" else
+    if eq_kername name prim_string_kn then append "&'a [u8]" else
     append ((get_ty_const_ident name) ++ "<");;
     monad_append_join (append ", ") (append "'a" :: args);;
     append ">"
@@ -400,7 +607,219 @@ Definition print_constructor
     pop_indent
   end.
 
-Definition print_const (kn : kername) (args : list (PrettyPrinter unit)) : PrettyPrinter unit :=
+(* The body of a Rust byte string literal: every byte other than an ASCII letter,
+   digit or space is written as a hexadecimal escape. *)
+Definition hex_digit (n : nat) : string :=
+  nth n ["0"; "1"; "2"; "3"; "4"; "5"; "6"; "7"; "8"; "9"; "a"; "b"; "c"; "d"; "e"; "f"] "0".
+
+Fixpoint rust_bytes (s : string) : string :=
+  match s with
+  | String.EmptyString => ""
+  | String.String b r =>
+    let n := Byte.to_nat b in
+    let range lo hi := andb (Nat.leb lo n) (Nat.leb n hi) in
+    let plain := orb (range 32 32) (orb (range 48 57) (orb (range 65 90) (range 97 122))) in
+    (if plain then String.String b String.EmptyString
+     else "\x" ++ hex_digit (Nat.div n 16) ++ hex_digit (Nat.modulo n 16)) ++ rust_bytes r
+  end%nat.
+
+Definition print_prim (p : EPrimitive.prim_val term) : PrettyPrinter unit :=
+  match projT2 p with
+  | EPrimitive.primIntModel i => append (Show.string_of_prim_int i ++ "i64")
+  | EPrimitive.primStringModel s =>
+    let bytes := String.concat "" (map Show.char63_to_string (PrimStringAxioms.to_list s)) in
+    append ("&b""" ++ rust_bytes bytes ++ """[..]")
+  | _ => printer_fail "Cannot handle Rocq primitive floats and arrays yet"
+  end.
+
+(* A constant whose result type is erased, applied to more arguments than its type
+   has arrows, as the projection of an erased field is: the result is the box, and
+   the remaining arguments are terms of a total language, so they are dropped. *)
+Definition erased_result_arity (kn : kername) : option nat :=
+  match Ex.lookup_constant Σ kn with
+  | Some cst =>
+    let '(doms, cod) := decompose_arr (snd (Ex.cst_type cst)) in
+    match cod with
+    | TBox => Some #|doms|
+    | _ => None
+    end
+  | None => None
+  end.
+
+Fixpoint mentions_tvar (i : nat) (t : box_type) : bool :=
+  match t with
+  | TVar n => (n =? i)%nat
+  | TArr a b | TApp a b => orb (mentions_tvar i a) (mentions_tvar i b)
+  | _ => false
+  end.
+
+Fixpoint ty_args (t : box_type) : list box_type :=
+  match t with
+  | TApp h a => (ty_args h ++ [a])%list
+  | _ => []
+  end.
+
+Definition ctor_field_types (ind : inductive) (c : nat) : list box_type :=
+  match Ex.lookup_env Σ (inductive_mind ind) with
+  | Some (Ex.InductiveDecl mib) =>
+    match nth_error (Ex.ind_bodies mib) (inductive_ind ind) with
+    | Some oib =>
+      match nth_error (Ex.ind_ctors oib) c with
+      | Some (_, fields, _) => map snd fields
+      | None => []
+      end
+    | None => []
+    end
+  | _ => []
+  end.
+
+(* Whether an argument of type [dom] lets rustc infer the type variable [i].  A
+   constructor application only does so through the type parameters that its own
+   fields mention: [Left 0] says nothing about [B] in [Either A B], and
+   [Left (Left 0)] nothing about it in [Either (Either A B) C], which is why a field
+   whose type is a parameter is followed into the argument at that field.  The fuel
+   bounds that descent; running out says yes, which prints no type argument. *)
+Fixpoint determines_tvar_fuel (fuel : nat) (i : nat) (dom : box_type) (arg : term) : bool :=
+  andb (mentions_tvar i dom)
+  match fuel with
+  | 0 => true
+  | S fuel =>
+    match EAstUtils.decompose_app arg with
+    | (tConstruct ind c _, cargs) =>
+      match ty_args dom with
+      | [] => true
+      | targs =>
+        let fields := ctor_field_types ind c in
+        (* erasure may keep the parameters as leading arguments of the constructor *)
+        let values := skipn (#|cargs| - #|fields|) cargs in
+        existsb id (mapi (fun p targ =>
+          andb (mentions_tvar i targ)
+               (existsb (fun '(field, value) =>
+                           andb (mentions_tvar p field)
+                                match field with
+                                | TVar q => determines_tvar_fuel fuel i targ value
+                                | _ => true
+                                end)
+                        (combine fields values))) targs)
+      end
+    | _ => true
+    end
+  end.
+
+Definition determines_tvar : nat -> box_type -> term -> bool := determines_tvar_fuel 16.
+
+Definition lookup_oib (ind : inductive) : option Ex.one_inductive_body :=
+  match Ex.lookup_env Σ (inductive_mind ind) with
+  | Some (Ex.InductiveDecl mib) => nth_error (Ex.ind_bodies mib) (inductive_ind ind)
+  | _ => None
+  end.
+
+(* The positions of the indices of an inductive family.  Erasure loses an index
+   that is a type, as in [GE : Type -> Type] with [gn : nat -> GE nat], and leaves
+   an unnamed arity type variable in its place that no constructor field mentions.
+   Dearging resets [ind_npars], so an index is told from a parameter by its binder:
+   a parameter, phantom or not, has a name. *)
+Definition family_indices (oib : Ex.one_inductive_body) : list nat :=
+  let fields := flat_map (fun '(_, fs, _) => map snd fs) (Ex.ind_ctors oib) in
+  let is_index i (tv : Ex.type_var_info) :=
+    andb (Ex.tvar_is_arity tv)
+         (andb (match Ex.tvar_name tv with BasicAst.nAnon => true | _ => false end)
+               (negb (existsb (mentions_tvar i) fields))) in
+  map fst (filter (fun '(i, tv) => is_index i tv)
+                  (combine (seq 0 #|Ex.ind_type_vars oib|) (Ex.ind_type_vars oib))).
+
+Fixpoint ty_head (t : box_type) : box_type :=
+  match t with
+  | TApp h _ => ty_head h
+  | _ => t
+  end.
+
+(* The applications of an inductive inside a type, with their type arguments. *)
+Fixpoint ind_apps (t : box_type) : list (inductive * list box_type) :=
+  match t with
+  | TArr a b => ind_apps a ++ ind_apps b
+  | TApp a b =>
+    (match ty_head t with TInd ind => [(ind, ty_args t)] | _ => [] end)
+      ++ ind_apps a ++ ind_apps b
+  | _ => []
+  end.
+
+(* The type arguments of [ind] at the index positions of the family [ind]. *)
+Definition index_args (ind : inductive) (args : list box_type) : list box_type :=
+  match lookup_oib ind with
+  | Some oib => flat_map (fun p => match nth_error args p with Some a => [a] | None => [] end) (family_indices oib)
+  | None => []
+  end.
+
+
+(* The families whose matches the body of a constant of type [ty] casts.  Erasure
+   loses a type index, so the branches of a match on a family have different Rust
+   types although each has the type the match asks for in the source, as in
+   [geval : GE A -> A] with [gn n => n] and [gb b => b].  Such a branch is printed
+   under [__cast], the counterpart of OCaml's [Obj.magic].  A cast hides the
+   branch's type from rustc's inference, so a match whose branches do not depend
+   on the index must get none ([gnone : GE A -> option nat]).  The printer does
+   not know the type of a match, and approximates: it casts the matches on a
+   family in the body of a constant whose result type mentions a type variable
+   that occurs in an index of that family in a domain.  A dependent match
+   elsewhere gets no cast, and rustc rejects it. *)
+Definition cast_families (tvars : list name) (ty : box_type) : list inductive :=
+  let '(doms, cod) := decompose_arr ty in
+  let in_cod i := mentions_tvar i cod in
+  flat_map (fun d =>
+    map fst (filter (fun '(ind, args) =>
+                       existsb (fun a => existsb (fun i => andb (in_cod i) (mentions_tvar i a))
+                                                 (seq 0 #|tvars|))
+                               (index_args ind args))
+                    (ind_apps d)))
+    doms.
+
+Definition needs_block (t : term) : bool :=
+  match t with
+  | tLetIn _ _ _
+  | tFix _ _ => true
+  | _ => false
+  end.
+
+(* The families whose matches some constant of the program casts. *)
+Definition program_cast_families : list inductive :=
+  flat_map (fun '(_, _, decl) =>
+              match decl with
+              | Ex.ConstantDecl cst => cast_families (fst (Ex.cst_type cst)) (snd (Ex.cst_type cst))
+              | _ => []
+              end) Σ.
+
+(* The type arguments of a call, printed only when rustc cannot infer one of them.
+   Erasure removed the explicit type argument.  A type variable that occurs neither
+   in the result type nor in what an argument determines gets [()], which satisfies
+   the [Copy] bound of the parameter, unless it occurs in an index of a family in a
+   domain and some constant of the program casts the matches on that family (see
+   [cast_families]): the cast would then reinterpret a value at [()], through this
+   call or through a call further down that passes the variable on.  Such a
+   variable gets [_], and rustc then rejects the call. *)
+Definition call_turbofish (kn : kername) (args : list term) : string :=
+  match Ex.lookup_constant Σ kn, remap_constant remaps kn, remap_inline_constant remaps kn with
+  | Some cst, None, None =>
+    let '(tvars, ty) := Ex.cst_type cst in
+    let '(doms, cod) := decompose_arr ty in
+    let undetermined i :=
+        andb (negb (mentions_tvar i cod))
+             (negb (existsb (fun '(d, a) => determines_tvar i d a) (combine doms args))) in
+    let at_index i :=
+        match flat_map (fun d => map fst (filter (fun '(_, args) => existsb (mentions_tvar i) args)
+                                                 (map (fun '(ind, args) => (ind, index_args ind args))
+                                                      (ind_apps d)))) doms with
+        | [] => false
+        | inds => existsb (fun ind => existsb (eq_inductive_def ind) program_cast_families) inds
+        end in
+    let targs := mapi (fun i _ => if andb (undetermined i) (negb (at_index i)) then "()" else "_") tvars in
+    if orb (Nat.ltb #|args| #|doms|) (negb (existsb (fun a => String.eqb a "()") targs)) then ""
+    else "::<" ++ String.concat ", " targs ++ ">"
+  | _, _, _ => ""
+  end.
+
+Definition print_const_turbofish (turbofish : string) (kn : kername) (args : list (PrettyPrinter unit))
+  : PrettyPrinter unit :=
   num_inline_args <- get_num_inline_args kn;;
   let (expr, num_inline_args) :=
       if (#|args| <? num_inline_args)%nat then
@@ -409,7 +828,7 @@ Definition print_const (kn : kername) (args : list (PrettyPrinter unit)) : Prett
       else
         (match remap_inline_constant remaps kn with
          | Some s => s
-         | None => "self." ^ const_global_ident_of_kername kn
+         | None => "self." ^ const_global_ident_of_kername kn ^ turbofish
          end, num_inline_args) in
   head_col <- get_indent;;
   let head := append expr in
@@ -428,7 +847,7 @@ Definition print_const (kn : kername) (args : list (PrettyPrinter unit)) : Prett
 Section print_term.
   Context (print_term : list ident -> term -> PrettyPrinter unit).
 
-  Definition print_case Γ ind npars discr brs : PrettyPrinter unit :=
+  Definition print_case (casts : list inductive) Γ ind npars discr brs : PrettyPrinter unit :=
     col <- get_indent;;
     push_indent col;;
 
@@ -438,6 +857,7 @@ Section print_term.
 
     oib <- wrap_result (lookup_ind_decl ind) id;;
     let rem := remap_inductive remaps ind in
+    let family := existsb (eq_inductive_def ind) casts in
 
     push_indent (col + indent_size);;
     (fix print_cases
@@ -479,7 +899,12 @@ Section print_term.
               print_parenthesized (0 <? #|args|)%nat (append_join ", " args);;
               append " => {";;
               append_nl ;;
-              print_term Γ t
+              (if family then
+                 append (if needs_block t then "__cast({ " else "__cast(");;
+                 print_term Γ t;;
+                 append (if needs_block t then " })" else ")")
+               else
+                 print_term Γ t)
             | name :: bctx0 =>
               name <- fresh_ident name Γ;;
               print_branch bctx0 (name :: args) (name :: Γ)
@@ -545,12 +970,8 @@ Section print_term.
     pop_indent.
 End print_term.
 
-Definition needs_block (t : term) : bool :=
-  match t with
-  | tLetIn _ _ _
-  | tFix _ _ => true
-  | _ => false
-  end.
+Definition print_const := print_const_turbofish "".
+
 
 (* If [head] is a reference to a known global constant, return the box_type
    of each of its declared parameters (in order), as recorded in its
@@ -568,7 +989,7 @@ Definition domain_types_for_head (head : term) : list box_type :=
   | _ => []
   end.
 
-Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit :=
+Fixpoint print_term (casts : list inductive) (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit :=
   match t with
   | tBox => append term_box_symbol
   | tRel n =>
@@ -587,7 +1008,7 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
     push_indent (col + indent_size);;
     append_nl;;
     let Γ := name :: Γ in
-    print_term Γ t;;
+    print_term casts Γ t;;
     pop_indent;;
     append_nl;;
     append "})";;
@@ -603,7 +1024,7 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
 
     push_indent (col + indent_size);;
     append_nl;;
-    print_term Γ val;;
+    print_term casts Γ val;;
     pop_indent;;
 
     (if needs_block val then
@@ -614,7 +1035,7 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
 
     append_nl;;
 
-    print_term (name :: Γ) body;;
+    print_term casts (name :: Γ) body;;
     pop_indent
 
   | tApp head arg =>
@@ -643,13 +1064,13 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
               append "| {";;
               push_indent (col + indent_size);;
               append_nl;;
-              print_term (name :: Γ) body;;
+              print_term casts (name :: Γ) body;;
               pop_indent;;
               append_nl;;
               append "})";;
               pop_indent)
-           else print_term Γ arg
-         | _, _ => print_term Γ arg
+           else print_term casts Γ arg
+         | _, _ => print_term casts Γ arg
          end);;
         (if needs_block arg then append " }" else ret tt) in
     let (true_head, arg_terms) := EAstUtils.decompose_app t in
@@ -668,14 +1089,23 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
            printer_fail ("Costructors-as-blocks is not supported: "
                          ^ (string_of_kername ind.(inductive_mind)))
 
-       | tConst kn => print_const kn args_printed
+       | tConst kn =>
+         match erased_result_arity kn with
+         | Some n =>
+           if (n <? #|args_printed|)%nat then print_const kn (firstn n args_printed)
+           else print_const kn args_printed
+         | None =>
+           print_const_turbofish (call_turbofish kn (snd (EAstUtils.decompose_app t))) kn args_printed
+         end
+
+       | tBox => append term_box_symbol
 
        | _ =>
          (* For other heads we might need to guide type inference by repeatedly
             applying a hint function *)
          append (String.concat "" (repeat "hint_app(" #|args_printed|));;
          (if needs_block head then append "{ " else ret tt);;
-         print_term Γ head;;
+         print_term casts Γ head;;
          (if needs_block head then append " }" else ret tt);;
          append ")";;
          monad_fold_left
@@ -699,10 +1129,10 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
       match remap_inductive remaps ind with
       | Some rem =>
         match re_ind_match rem with
-        | Some s => print_remapped_case print_term Γ ind discr brs s
-        | None => print_case print_term Γ ind npars discr brs
+        | Some s => print_remapped_case (print_term casts) Γ ind discr brs s
+        | None => print_case (print_term casts) casts Γ ind npars discr brs
         end
-      | None => print_case print_term Γ ind npars discr brs
+      | None => print_case (print_term casts) casts Γ ind npars discr brs
       end
     end
   | tFix defs i =>
@@ -745,7 +1175,7 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
          pop_indent;;
          append_nl)
       (combine
-         (map (fun d => print_term Γ (EAst.dbody d)) defs)
+         (map (fun d => print_term casts Γ (EAst.dbody d)) defs)
          cells)
       tt;;
 
@@ -756,7 +1186,7 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
     printer_fail ("unhandled tProj on " ^ (string_of_kername (inductive_mind ind)))
 
   | tCoFix _ _ => printer_fail "Cannot handle tCoFix yet"
-  | tPrim _ => printer_fail "Cannot handle Rocq primitive types yet"
+  | tPrim p => print_prim p
   | tLazy _ => printer_fail "Cannot handle lazy yet"
   | tForce _ => printer_fail "Cannot handle force yet"
   end.
@@ -793,6 +1223,7 @@ Definition print_constant
          direct call to this constant, so recursion compiles to a native
          recursive [fn] rather than a heap [Cell<Option<&dyn Fn>>]. *)
       let body := native_rec_body (fst (decompose_arr ty)) kn body in
+      let casts := cast_families type_vars ty in
       (fix print_top Γ body ty :=
          match body, ty with
          | tLambda na body, TArr dom cod =>
@@ -809,7 +1240,7 @@ Definition print_constant
            append_nl;;
 
            push_use rname;;
-           print_term Γ body;;
+           print_term casts Γ body;;
 
            pop_indent;;
            append_nl;;
@@ -847,7 +1278,7 @@ Definition print_constant
           | S k' => wrap k' (tLambda nAnon t)
           end) num_inline_args
          (mkApps (tConst kn) (rev_map tRel (seq 0 num_inline_args))) in
-     print_term [] eta_term;;
+     print_term [] [] eta_term;;
 
      pop_indent;;
      append_nl;;
@@ -983,7 +1414,7 @@ Class Preamble :=
 
 Context `{Preamble}.
 
-Definition print_program : PrettyPrinter unit :=
+Definition print_program_aux : PrettyPrinter unit :=
   sig_col <- get_indent;;
   push_indent sig_col;;
 
@@ -1062,6 +1493,14 @@ Definition print_program : PrettyPrinter unit :=
 
   pop_indent.
 End FixEnv.
+
+Definition print_program
+           (Σ : Ex.global_env)
+           (remaps : remaps)
+           `{RustPrintConfig}
+           (ind_attrs : ind_attr_map)
+           `{Preamble} : PrettyPrinter unit :=
+  print_program_aux (prune_type_params remaps Σ) remaps ind_attrs.
 
 Definition extract_rust_within_rocq
            (overridden_masks : Kernames.kername -> option bitmask)
