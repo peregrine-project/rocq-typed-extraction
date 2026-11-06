@@ -240,6 +240,22 @@ Fixpoint print_type_aux (Γ : list ident) (t : box_type) (args : list (PrettyPri
 
 Definition print_type Γ t := print_type_aux Γ t [].
 
+(* Whether a box_type contains no free type variables. Only such types are
+   safe to print outside of a definition's own [Γty] context: printing a
+   [TVar n] requires resolving [n] against the [Γty] of the definition that
+   introduced it, and at an arbitrary call site we do not have that context
+   available (nor, without full type inference, the type it was instantiated
+   to). Restricting closure-parameter annotations (see [print_term]'s
+   [tApp] case) to [box_type_closed] domains sidesteps this alignment
+   problem entirely: we simply never print a [TVar] we can't resolve. *)
+Fixpoint box_type_closed (t : box_type) : bool :=
+  match t with
+  | TVar _ => false
+  | TBox | TAny | TInd _ | TConst _ => true
+  | TArr dom cod => box_type_closed dom && box_type_closed cod
+  | TApp hd arg => box_type_closed hd && box_type_closed arg
+  end.
+
 (* Get number of arguments that a constant expects when we print it *)
 Definition get_num_inline_args (kn : kername) : PrettyPrinter nat :=
   cst <- wrap_option
@@ -453,6 +469,22 @@ Definition needs_block (t : term) : bool :=
   | _ => false
   end.
 
+(* If [head] is a reference to a known global constant, return the box_type
+   of each of its declared parameters (in order), as recorded in its
+   erasure-time type signature. Anything else (locally bound heads,
+   constructors, unknown constants) yields no information: callers must
+   treat the empty list as "no annotation available" rather than "this
+   function takes zero arguments". *)
+Definition domain_types_for_head (head : term) : list box_type :=
+  match head with
+  | tConst kn =>
+    match Ex.lookup_constant Σ kn with
+    | Some cst => fst (decompose_arr (snd (Ex.cst_type cst)))
+    | None => []
+    end
+  | _ => []
+  end.
+
 Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit :=
   match t with
   | tBox => append term_box_symbol
@@ -504,14 +536,49 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
 
   | tApp head arg =>
 
-    (fix f head args_printed {struct head} :=
+    (* If the ultimate head of this application spine is a known global
+       constant, we know the box_type of each argument position. When an
+       argument in such a position is itself a bare [tLambda], we can annotate
+       its closure parameter with that domain type instead of leaving it for
+       Rust to infer. We require the argument count to exactly match the
+       constant's declared arity so there is never any ambiguity about which
+       domain type lines up with which argument (under- or over-application
+       simply disables annotation for this application). Domains containing a
+       [TVar] are also left unannotated, since we have no [Γty] context at an
+       arbitrary call site to resolve them against (see [box_type_closed]
+       above). *)
+    let print_arg arg annot :=
+        (if needs_block arg then append "{ " else ret tt);;
+        (match arg, annot with
+         | tLambda na body, Some (TArr d _) =>
+           if box_type_closed d then
+             (name <- fresh_ident na Γ;;
+              col <- get_indent;;
+              push_indent col;;
+              append ("self.closure(move |" ++ name ++ ": ");;
+              print_type [] d;;
+              append "| {";;
+              push_indent (col + indent_size);;
+              append_nl;;
+              print_term (name :: Γ) body;;
+              pop_indent;;
+              append_nl;;
+              append "})";;
+              pop_indent)
+           else print_term Γ arg
+         | _, _ => print_term Γ arg
+         end);;
+        (if needs_block arg then append " }" else ret tt) in
+    let (true_head, arg_terms) := EAstUtils.decompose_app t in
+    let dtys := domain_types_for_head true_head in
+    (* Annotations in right-to-left order, matching the traversal below. *)
+    let annots :=
+        if Nat.eqb #|arg_terms| #|dtys| then rev (map Some dtys) else [] in
+
+    (fix f head args_printed annots {struct head} :=
        match head with
        | tApp head arg =>
-         let printed_arg :=
-             (if needs_block arg then append "{ " else ret tt);;
-             print_term Γ arg;;
-             if needs_block arg then append " }" else ret tt in
-         f head (printed_arg :: args_printed)
+         f head (print_arg arg (hd None annots) :: args_printed) (tl annots)
 
        | tConstruct ind i [] => print_constructor ind i args_printed
        | tConstruct ind i (_ :: _) =>
@@ -532,10 +599,7 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
            (fun pref a => append pref;; a;; append ")";; ret ")(") args_printed "(";;
          ret tt
 
-       end) head [if needs_block arg then
-                    append "{ ";; print_term Γ arg;; append " }"
-                  else
-                    print_term Γ arg]
+       end) head [print_arg arg (hd None annots)] (tl annots)
 
   | tConst kn => print_const kn []
   | tConstruct ind i [] => print_constructor ind i []
