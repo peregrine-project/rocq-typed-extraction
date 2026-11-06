@@ -469,21 +469,6 @@ Definition needs_block (t : term) : bool :=
   | _ => false
   end.
 
-(* Pure (non-monadic) decomposition of an application spine into its
-   ultimate head and the list of arguments in left-to-right order, e.g.
-   [decompose_app_terms (tApp (tApp hd a1) a2) = (hd, [a1; a2])]. Used only
-   to look up parameter types for annotation purposes below; the actual
-   subterms fed to [print_term]'s recursive calls always come from direct
-   pattern matches on [t], never from this helper's output, so it has no
-   bearing on the Fixpoint's structural-recursion / guardedness proof. *)
-Fixpoint decompose_app_terms (t : term) : term * list term :=
-  match t with
-  | tApp hd a =>
-    let (h, args) := decompose_app_terms hd in
-    (h, (args ++ [a])%list)
-  | _ => (t, [])
-  end.
-
 (* If [head] is a reference to a known global constant, return the box_type
    of each of its declared parameters (in order), as recorded in its
    erasure-time type signature. Anything else (locally bound heads,
@@ -584,7 +569,7 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
          | _, _ => print_term Γ arg
          end);;
         (if needs_block arg then append " }" else ret tt) in
-    let (true_head, arg_terms) := decompose_app_terms t in
+    let (true_head, arg_terms) := EAstUtils.decompose_app t in
     let dtys := domain_types_for_head true_head in
     (* Annotations in right-to-left order, matching the traversal below. *)
     let annots :=
