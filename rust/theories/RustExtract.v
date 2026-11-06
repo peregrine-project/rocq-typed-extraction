@@ -392,7 +392,12 @@ Definition fresh_ty_arg_name (name : name) (Γ : list ident) : PrettyPrinter ide
 
 (* Rocq's primitive types have no declaration to print: a primitive integer is an
    [i64] (its values are below 2^63) and a primitive string, an array of bytes, is
-   a byte slice. *)
+   a byte slice.  The [i64] representation fixes an invariant that every remap of
+   a PrimInt63 operation must keep: values stay in [0, 2^63), arithmetic wraps
+   modulo 2^63 (Rust's [+] on [i64] panics on overflow in debug builds and wraps
+   modulo 2^64 in release builds), and [lts], [asr] and the other signed
+   operations read bit 62 as the sign.  An operation without a remap is an axiom
+   without a function, which rustc rejects. *)
 Definition prim_int_kn : kername :=
   (MPfile ["PrimInt63"; "Int63"; "Cyclic"; "Numbers"; "Corelib"], "int").
 
@@ -703,10 +708,95 @@ Fixpoint determines_tvar_fuel (fuel : nat) (i : nat) (dom : box_type) (arg : ter
 
 Definition determines_tvar : nat -> box_type -> term -> bool := determines_tvar_fuel 16.
 
+Definition lookup_oib (ind : inductive) : option Ex.one_inductive_body :=
+  match Ex.lookup_env Σ (inductive_mind ind) with
+  | Some (Ex.InductiveDecl mib) => nth_error (Ex.ind_bodies mib) (inductive_ind ind)
+  | _ => None
+  end.
+
+(* The positions of the indices of an inductive family.  Erasure loses an index
+   that is a type, as in [GE : Type -> Type] with [gn : nat -> GE nat], and leaves
+   an unnamed arity type variable in its place that no constructor field mentions.
+   Dearging resets [ind_npars], so an index is told from a parameter by its binder:
+   a parameter, phantom or not, has a name. *)
+Definition family_indices (oib : Ex.one_inductive_body) : list nat :=
+  let fields := flat_map (fun '(_, fs, _) => map snd fs) (Ex.ind_ctors oib) in
+  let is_index i (tv : Ex.type_var_info) :=
+    andb (Ex.tvar_is_arity tv)
+         (andb (match Ex.tvar_name tv with BasicAst.nAnon => true | _ => false end)
+               (negb (existsb (mentions_tvar i) fields))) in
+  map fst (filter (fun '(i, tv) => is_index i tv)
+                  (combine (seq 0 #|Ex.ind_type_vars oib|) (Ex.ind_type_vars oib))).
+
+Fixpoint ty_head (t : box_type) : box_type :=
+  match t with
+  | TApp h _ => ty_head h
+  | _ => t
+  end.
+
+(* The applications of an inductive inside a type, with their type arguments. *)
+Fixpoint ind_apps (t : box_type) : list (inductive * list box_type) :=
+  match t with
+  | TArr a b => ind_apps a ++ ind_apps b
+  | TApp a b =>
+    (match ty_head t with TInd ind => [(ind, ty_args t)] | _ => [] end)
+      ++ ind_apps a ++ ind_apps b
+  | _ => []
+  end.
+
+(* The type arguments of [ind] at the index positions of the family [ind]. *)
+Definition index_args (ind : inductive) (args : list box_type) : list box_type :=
+  match lookup_oib ind with
+  | Some oib => flat_map (fun p => match nth_error args p with Some a => [a] | None => [] end) (family_indices oib)
+  | None => []
+  end.
+
+
+(* The families whose matches the body of a constant of type [ty] casts.  Erasure
+   loses a type index, so the branches of a match on a family have different Rust
+   types although each has the type the match asks for in the source, as in
+   [geval : GE A -> A] with [gn n => n] and [gb b => b].  Such a branch is printed
+   under [__cast], the counterpart of OCaml's [Obj.magic].  A cast hides the
+   branch's type from rustc's inference, so a match whose branches do not depend
+   on the index must get none ([gnone : GE A -> option nat]).  The printer does
+   not know the type of a match, and approximates: it casts the matches on a
+   family in the body of a constant whose result type mentions a type variable
+   that occurs in an index of that family in a domain.  A dependent match
+   elsewhere gets no cast, and rustc rejects it. *)
+Definition cast_families (tvars : list name) (ty : box_type) : list inductive :=
+  let '(doms, cod) := decompose_arr ty in
+  let in_cod i := mentions_tvar i cod in
+  flat_map (fun d =>
+    map fst (filter (fun '(ind, args) =>
+                       existsb (fun a => existsb (fun i => andb (in_cod i) (mentions_tvar i a))
+                                                 (seq 0 #|tvars|))
+                               (index_args ind args))
+                    (ind_apps d)))
+    doms.
+
+Definition needs_block (t : term) : bool :=
+  match t with
+  | tLetIn _ _ _
+  | tFix _ _ => true
+  | _ => false
+  end.
+
+(* The families whose matches some constant of the program casts. *)
+Definition program_cast_families : list inductive :=
+  flat_map (fun '(_, _, decl) =>
+              match decl with
+              | Ex.ConstantDecl cst => cast_families (fst (Ex.cst_type cst)) (snd (Ex.cst_type cst))
+              | _ => []
+              end) Σ.
+
 (* The type arguments of a call, printed only when rustc cannot infer one of them.
-   Erasure removed the explicit type argument, and a type variable that occurs
-   neither in the result type nor in what an argument determines has no effect on
-   the program, so any type does; [()] satisfies the [Copy] bound of the parameter. *)
+   Erasure removed the explicit type argument.  A type variable that occurs neither
+   in the result type nor in what an argument determines gets [()], which satisfies
+   the [Copy] bound of the parameter, unless it occurs in an index of a family in a
+   domain and some constant of the program casts the matches on that family (see
+   [cast_families]): the cast would then reinterpret a value at [()], through this
+   call or through a call further down that passes the variable on.  Such a
+   variable gets [_], and rustc then rejects the call. *)
 Definition call_turbofish (kn : kername) (args : list term) : string :=
   match Ex.lookup_constant Σ kn, remap_constant remaps kn, remap_inline_constant remaps kn with
   | Some cst, None, None =>
@@ -715,9 +805,16 @@ Definition call_turbofish (kn : kername) (args : list term) : string :=
     let undetermined i :=
         andb (negb (mentions_tvar i cod))
              (negb (existsb (fun '(d, a) => determines_tvar i d a) (combine doms args))) in
-    let flags := mapi (fun i _ => undetermined i) tvars in
-    if orb (Nat.ltb #|args| #|doms|) (negb (existsb id flags)) then ""
-    else "::<" ++ String.concat ", " (map (fun u : bool => if u then "()" else "_") flags) ++ ">"
+    let at_index i :=
+        match flat_map (fun d => map fst (filter (fun '(_, args) => existsb (mentions_tvar i) args)
+                                                 (map (fun '(ind, args) => (ind, index_args ind args))
+                                                      (ind_apps d)))) doms with
+        | [] => false
+        | inds => existsb (fun ind => existsb (eq_inductive_def ind) program_cast_families) inds
+        end in
+    let targs := mapi (fun i _ => if andb (undetermined i) (negb (at_index i)) then "()" else "_") tvars in
+    if orb (Nat.ltb #|args| #|doms|) (negb (existsb (fun a => String.eqb a "()") targs)) then ""
+    else "::<" ++ String.concat ", " targs ++ ">"
   | _, _, _ => ""
   end.
 
@@ -747,29 +844,10 @@ Definition print_const_turbofish (turbofish : string) (kn : kername) (args : lis
   monad_append_concat (map it_app args_in_tail);;
   pop_indent.
 
-(* An inductive with an unnamed type variable that no constructor field mentions is
-   taken for a family indexed by a type, as [GExp : Set -> Type] with
-   [nat : Nat -> GExp Nat] and [bool : Bool -> GExp Bool]: erasure loses the index,
-   and the branches of a match have different Rust types although each has the type
-   the match asks for in the source.  Such a branch is printed under [__cast], the
-   counterpart of OCaml's [Obj.magic]; the program's typing in Rocq guarantees that
-   the two types agree.  Dearging resets [ind_npars], so the printer tells an index
-   from a parameter by its binder: a parameter has a name, and a phantom parameter
-   must get no cast, because all branches have one type and a cast hides it from
-   rustc's inference.  An index with a named binder gets no cast either, and rustc
-   then rejects the program. *)
-Definition is_type_family (oib : Ex.one_inductive_body) : bool :=
-  let fields := flat_map (fun '(_, fs, _) => map snd fs) (Ex.ind_ctors oib) in
-  existsb id (mapi (fun i tv =>
-    andb (Ex.tvar_is_arity tv)
-         (andb (match Ex.tvar_name tv with BasicAst.nAnon => true | _ => false end)
-               (negb (existsb (mentions_tvar i) fields))))
-    (Ex.ind_type_vars oib)).
-
 Section print_term.
   Context (print_term : list ident -> term -> PrettyPrinter unit).
 
-  Definition print_case Γ ind npars discr brs : PrettyPrinter unit :=
+  Definition print_case (casts : list inductive) Γ ind npars discr brs : PrettyPrinter unit :=
     col <- get_indent;;
     push_indent col;;
 
@@ -779,7 +857,7 @@ Section print_term.
 
     oib <- wrap_result (lookup_ind_decl ind) id;;
     let rem := remap_inductive remaps ind in
-    let family := is_type_family oib in
+    let family := existsb (eq_inductive_def ind) casts in
 
     push_indent (col + indent_size);;
     (fix print_cases
@@ -822,7 +900,9 @@ Section print_term.
               append " => {";;
               append_nl ;;
               (if family then
-                 append "__cast({ ";; print_term Γ t;; append " })"
+                 append (if needs_block t then "__cast({ " else "__cast(");;
+                 print_term Γ t;;
+                 append (if needs_block t then " })" else ")")
                else
                  print_term Γ t)
             | name :: bctx0 =>
@@ -892,12 +972,6 @@ End print_term.
 
 Definition print_const := print_const_turbofish "".
 
-Definition needs_block (t : term) : bool :=
-  match t with
-  | tLetIn _ _ _
-  | tFix _ _ => true
-  | _ => false
-  end.
 
 (* If [head] is a reference to a known global constant, return the box_type
    of each of its declared parameters (in order), as recorded in its
@@ -915,7 +989,7 @@ Definition domain_types_for_head (head : term) : list box_type :=
   | _ => []
   end.
 
-Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit :=
+Fixpoint print_term (casts : list inductive) (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit :=
   match t with
   | tBox => append term_box_symbol
   | tRel n =>
@@ -934,7 +1008,7 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
     push_indent (col + indent_size);;
     append_nl;;
     let Γ := name :: Γ in
-    print_term Γ t;;
+    print_term casts Γ t;;
     pop_indent;;
     append_nl;;
     append "})";;
@@ -950,7 +1024,7 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
 
     push_indent (col + indent_size);;
     append_nl;;
-    print_term Γ val;;
+    print_term casts Γ val;;
     pop_indent;;
 
     (if needs_block val then
@@ -961,7 +1035,7 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
 
     append_nl;;
 
-    print_term (name :: Γ) body;;
+    print_term casts (name :: Γ) body;;
     pop_indent
 
   | tApp head arg =>
@@ -990,13 +1064,13 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
               append "| {";;
               push_indent (col + indent_size);;
               append_nl;;
-              print_term (name :: Γ) body;;
+              print_term casts (name :: Γ) body;;
               pop_indent;;
               append_nl;;
               append "})";;
               pop_indent)
-           else print_term Γ arg
-         | _, _ => print_term Γ arg
+           else print_term casts Γ arg
+         | _, _ => print_term casts Γ arg
          end);;
         (if needs_block arg then append " }" else ret tt) in
     let (true_head, arg_terms) := EAstUtils.decompose_app t in
@@ -1031,7 +1105,7 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
             applying a hint function *)
          append (String.concat "" (repeat "hint_app(" #|args_printed|));;
          (if needs_block head then append "{ " else ret tt);;
-         print_term Γ head;;
+         print_term casts Γ head;;
          (if needs_block head then append " }" else ret tt);;
          append ")";;
          monad_fold_left
@@ -1055,10 +1129,10 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
       match remap_inductive remaps ind with
       | Some rem =>
         match re_ind_match rem with
-        | Some s => print_remapped_case print_term Γ ind discr brs s
-        | None => print_case print_term Γ ind npars discr brs
+        | Some s => print_remapped_case (print_term casts) Γ ind discr brs s
+        | None => print_case (print_term casts) casts Γ ind npars discr brs
         end
-      | None => print_case print_term Γ ind npars discr brs
+      | None => print_case (print_term casts) casts Γ ind npars discr brs
       end
     end
   | tFix defs i =>
@@ -1101,7 +1175,7 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
          pop_indent;;
          append_nl)
       (combine
-         (map (fun d => print_term Γ (EAst.dbody d)) defs)
+         (map (fun d => print_term casts Γ (EAst.dbody d)) defs)
          cells)
       tt;;
 
@@ -1149,6 +1223,7 @@ Definition print_constant
          direct call to this constant, so recursion compiles to a native
          recursive [fn] rather than a heap [Cell<Option<&dyn Fn>>]. *)
       let body := native_rec_body (fst (decompose_arr ty)) kn body in
+      let casts := cast_families type_vars ty in
       (fix print_top Γ body ty :=
          match body, ty with
          | tLambda na body, TArr dom cod =>
@@ -1165,7 +1240,7 @@ Definition print_constant
            append_nl;;
 
            push_use rname;;
-           print_term Γ body;;
+           print_term casts Γ body;;
 
            pop_indent;;
            append_nl;;
@@ -1203,7 +1278,7 @@ Definition print_constant
           | S k' => wrap k' (tLambda nAnon t)
           end) num_inline_args
          (mkApps (tConst kn) (rev_map tRel (seq 0 num_inline_args))) in
-     print_term [] eta_term;;
+     print_term [] [] eta_term;;
 
      pop_indent;;
      append_nl;;

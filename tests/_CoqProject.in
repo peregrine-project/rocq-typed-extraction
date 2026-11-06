@@ -10,6 +10,7 @@ theories/PhantomParams.v
 theories/RustExtractTests.v
 theories/NativeRecShapes.v
 theories/NativeRec.v
+theories/PrintFixes.v
 theories/Ack.v
 theories/ElmExtractExamples.v
 theories/ElmExtractTests.v

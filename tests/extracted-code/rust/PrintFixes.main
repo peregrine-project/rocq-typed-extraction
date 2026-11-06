@@ -1,0 +1,11 @@
+
+fn to_u64(n: &Nat) -> u64 { match n { Nat::O(_) => 0, Nat::S(_, m) => 1 + to_u64(m) } }
+
+fn main() {
+  let p = Program::new();
+  let mut l = p.test();
+  let mut v = vec![];
+  while let List::cons(_, _, h, t) = l { v.push(to_u64(h)); l = t; }
+  println!("{:?}", v);
+  assert_eq!(v, [1, 0, 5, 7, 1, 4]);
+}

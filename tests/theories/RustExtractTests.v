@@ -552,3 +552,58 @@ Module FamilyIndex.
     "}" $>.
   Proof. vm_compute. reflexivity. Qed.
 End FamilyIndex.
+
+(* A match on a type-indexed family whose branches do not depend on the index
+   gets no cast: [gnone]'s result type does not mention the index. *)
+Module FamilyNoCast.
+  Inductive GE : Type -> Type := gn : nat -> GE nat | gb : unit -> GE unit.
+  Definition gnone {A} (g : GE A) : option nat := match g with gn _ => None | gb _ => None end.
+  MetaRocq Quote Recursively Definition quoted := @gnone.
+
+  Example test :
+    extract quoted = Ok <$
+    "#[derive(Debug, Clone)]";
+    "pub enum Nat<'a> {";
+    "  O(PhantomData<&'a ()>),";
+    "  S(PhantomData<&'a ()>, &'a Nat<'a>)";
+    "}";
+    "";
+    "#[derive(Debug, Clone)]";
+    "pub enum Unit<'a> {";
+    "  tt(PhantomData<&'a ()>)";
+    "}";
+    "";
+    "#[derive(Debug, Clone)]";
+    "pub enum GE<'a, a> {";
+    "  gn(PhantomData<&'a a>, &'a Nat<'a>),";
+    "  gb(PhantomData<&'a a>, &'a Unit<'a>)";
+    "}";
+    "";
+    "#[derive(Debug, Clone)]";
+    "pub enum Option<'a, A> {";
+    "  Some(PhantomData<&'a A>, A),";
+    "  None(PhantomData<&'a A>)";
+    "}";
+    "";
+    "fn gnone<A: Copy>(&'a self, g: &'a GE<'a, A>) -> &'a Option<'a, &'a Nat<'a>> {";
+    "  match g {";
+    "    &GE::gn(_, n) => {";
+    "      self.alloc(";
+    "        Option::None(";
+    "          PhantomData))";
+    "    },";
+    "    &GE::gb(_, u) => {";
+    "      self.alloc(";
+    "        Option::None(";
+    "          PhantomData))";
+    "    },";
+    "  }";
+    "}";
+    "fn gnone__curried<A: Copy>(&'a self) -> &'a dyn Fn(&'a GE<'a, A>) -> &'a Option<'a, &'a Nat<'a>> {";
+    "  self.closure(move |x| {";
+    "    self.gnone(";
+    "      x)";
+    "  })";
+    "}" $>.
+  Proof. vm_compute. reflexivity. Qed.
+End FamilyNoCast.
