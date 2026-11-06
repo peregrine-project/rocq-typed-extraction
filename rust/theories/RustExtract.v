@@ -145,14 +145,14 @@ Definition movable (k : nat) (t : term) : bool := Nat.leb (occ k t) 1.
 
 Definition is_moved (s : string) : bool :=
   match s with
-  | bytestring.String.String c _ => Byte.eqb c "!"%byte
+  | bytestring.String.String Byte.x21 _ => true
   | _ => false
   end.
 
 (* A borrowed parameter's entry carries the mark [*]: the variable is a reference. *)
 Definition is_ref (s : string) : bool :=
   match s with
-  | bytestring.String.String c _ => Byte.eqb c "*"%byte
+  | bytestring.String.String Byte.x2a _ => true
   | _ => false
   end.
 
@@ -162,14 +162,14 @@ Definition is_ref (s : string) : bool :=
    and a [let] see this mark: [print_term] removes it for every other term. *)
 Definition is_tail (s : string) : bool :=
   match s with
-  | bytestring.String.String c _ => Byte.eqb c "?"%byte
+  | bytestring.String.String Byte.x3f _ => true
   | _ => false
   end.
 
 Definition unmark (s : string) : string :=
   match s with
   | bytestring.String.String c r =>
-    if orb (Byte.eqb c "!"%byte) (orb (Byte.eqb c "*"%byte) (Byte.eqb c "?"%byte)) then r else s
+    match c with Byte.x21 | Byte.x2a | Byte.x3f => r | _ => s end
   | _ => s
   end.
 
@@ -282,7 +282,7 @@ Definition clean_global_ident (s : string) : string :=
 Definition strip_raw (s : string) : string :=
   match s with
   | bytestring.String.String c1 (bytestring.String.String c2 r) =>
-    if andb (Byte.eqb c1 "r"%byte) (Byte.eqb c2 "#"%byte) then r else s
+    match c1, c2 with Byte.x72, Byte.x23 => r | _, _ => s end
   | _ => s
   end.
 
