@@ -192,6 +192,29 @@ Definition tail_unused (nb : nat) (t : term) (Γ : list string) : list string :=
               if andb (is_tail e) (Nat.eqb (occ (i + nb) t) 0) then [unmark e] else [])
            (combine (seq 0 #|Γ|) Γ).
 
+(* Which arguments of a saturated call in tail position move their variable. The
+   variable has the mark [?] and the argument is the variable itself. Every other use
+   is the variable itself at an earlier position passed by value, printed as a clone
+   whose borrow ends at once, so that [f(x.clone(), x)] compiles and no use follows the
+   move: [last_use_no_later_use] of [OccCorrect.v]. *)
+Definition last_use_move (Γ : list string) (use_ref : nat -> bool) (args : list term) (i : nat) : bool :=
+  match nth_error args i with
+  | Some (tRel n) =>
+    match nth_error Γ n with
+    | Some e =>
+      andb (andb (andb (is_tail e) (negb (use_ref i)))
+        (forallb (fun a => Nat.eqb (occ n a) 0) (skipn (S i) args)))
+        (forallb (fun k =>
+                    match nth_error args k with
+                    | Some (tRel m) => orb (negb (Nat.eqb m n)) (negb (use_ref k))
+                    | Some a => Nat.eqb (occ n a) 0
+                    | None => true
+                    end) (seq 0 i))
+    | None => false
+    end
+  | _ => false
+  end.
+
 Section FixEnv.
 Context (Σ : Ex.global_env).
 Context (remaps : remaps).
@@ -965,6 +988,7 @@ Definition borrowed_arg (Γ : list ident) (a : term) (printed : PrettyPrinter un
   end.
 
 Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit :=
+  let Γ_tail := Γ in
   let Γ := match t with
            | tCase _ _ _ | tLetIn _ _ _ => Γ
            | _ => map demote Γ
@@ -1068,7 +1092,20 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
          n <- get_num_inline_args kn;;
          let use_ref j := andb is_rc (andb (Nat.leb n #|args_printed|)
                                            (andb (Nat.ltb j n) (rc_borrowed kn j))) in
-         let printed := mapi (fun j '(p, b) => if use_ref j then b else p)
+         let args := snd (EAstUtils.decompose_app t) in
+         let moved_arg j p :=
+           match nth_error args j with
+           | Some (tRel n) =>
+             match nth_error Γ n with
+             | Some e => append (unmark e)
+             | None => p
+             end
+           | _ => p
+           end in
+         let printed := mapi (fun j '(p, b) =>
+                                if use_ref j then b
+                                else if andb is_rc (last_use_move Γ_tail use_ref args j)
+                                     then moved_arg j p else p)
                              (combine args_printed args_borrowed) in
          match erased_result_arity kn with
          | Some m =>

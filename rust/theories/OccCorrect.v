@@ -8,7 +8,7 @@
     value 2.  The theorem [movable_at_most_once] is the property that the printer
     relies on: a variable found movable is used at most once on every path. *)
 
-From Stdlib Require Import Lia List PeanoNat.
+From Stdlib Require Import Bool Lia List PeanoNat.
 From MetaRocq.Utils Require Import MRList.
 From MetaRocq.Common Require BasicAst.
 From MetaRocq.Erasure Require Import EAst.
@@ -124,6 +124,43 @@ Proof.
   - eapply movable_at_most_once; eassumption.
   - pose proof (occ_zero_no_use _ _ _ H H0). specialize (IHreaches Hm). lia.
   - pose proof (occ_zero_no_use _ _ _ H H0). specialize (IHreaches Hm). lia.
+Qed.
+
+(** The last-use rule of a call in tail position: no later argument uses a variable that
+    an argument moves, and each earlier use is the variable itself passed by value, or no
+    use at all. *)
+Lemma last_use_no_later_use Γ use_ref args i n a k :
+  nth_error args i = Some (tRel n) ->
+  last_use_move Γ use_ref args i = true ->
+  i < k -> nth_error args k = Some a -> occ n a = 0.
+Proof.
+  intros Hi Hm Hik Ha. unfold last_use_move in Hm. rewrite Hi in Hm.
+  destruct (nth_error Γ n) as [e|]; [|discriminate].
+  apply andb_true_iff in Hm as [Hm _]. apply andb_true_iff in Hm as [_ Hm].
+  rewrite forallb_forall in Hm.
+  assert (Hin : In a (skipn (S i) args)).
+  { apply nth_error_In with (n := k - S i). rewrite nth_error_skipn.
+    replace (S i + (k - S i)) with k by lia. exact Ha. }
+  apply Nat.eqb_eq, Hm, Hin.
+Qed.
+
+Lemma last_use_earlier Γ use_ref args i n k a :
+  nth_error args i = Some (tRel n) ->
+  last_use_move Γ use_ref args i = true ->
+  k < i -> nth_error args k = Some a ->
+  occ n a = 0 \/ (a = tRel n /\ use_ref k = false).
+Proof.
+  intros Hi Hm Hk Ha. unfold last_use_move in Hm. rewrite Hi in Hm.
+  destruct (nth_error Γ n) as [e|]; [|discriminate].
+  apply andb_true_iff in Hm as [_ Hm]. rewrite forallb_forall in Hm.
+  specialize (Hm k). rewrite Ha in Hm.
+  assert (H : In k (seq 0 i)) by (apply in_seq; lia). specialize (Hm H).
+  destruct a; try (left; apply Nat.eqb_eq, Hm).
+  rename n0 into m. apply orb_true_iff in Hm as [Hm|Hm].
+  - left. cbn. apply negb_true_iff in Hm. rewrite Hm. reflexivity.
+  - destruct (Nat.eq_dec m n) as [->|Hne].
+    + right. split; [reflexivity|]. apply negb_true_iff, Hm.
+    + left. cbn. destruct (Nat.eqb_spec m n); [contradiction|reflexivity].
 Qed.
 
 (** The rule applies where [movable] does not, as in [divmod]: the first branch uses
