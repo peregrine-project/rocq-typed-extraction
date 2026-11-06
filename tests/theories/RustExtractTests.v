@@ -461,3 +461,46 @@ Module NativeRecSuffix.
         (E.tApp (E.tApp (E.tConst kn) (E.tRel 1)) (E.tRel 0))).
   Proof. vm_compute. reflexivity. Qed.
 End NativeRecSuffix.
+
+(* A lambda passed to a monomorphic constant applied to its full arity: the
+   closure parameter is annotated with the domain type. *)
+Module ClosureAnnot.
+  Definition apply_nat (f : nat -> nat) (n : nat) : nat := f n.
+  Definition app := apply_nat (fun x => S x) 0.
+  MetaRocq Quote Recursively Definition ex := app.
+
+  Example ClosureAnnot_test :
+    extract ex = Ok <$
+    "#[derive(Debug, Clone)]";
+    "pub enum Nat<'a> {";
+    "  O(PhantomData<&'a ()>),";
+    "  S(PhantomData<&'a ()>, &'a Nat<'a>)";
+    "}";
+    "";
+    "fn apply_nat(&'a self, f: &'a dyn Fn(&'a Nat<'a>) -> &'a Nat<'a>, n: &'a Nat<'a>) -> &'a Nat<'a> {";
+    "  hint_app(f)(n)";
+    "}";
+    "fn apply_nat__curried(&'a self) -> &'a dyn Fn(&'a dyn Fn(&'a Nat<'a>) -> &'a Nat<'a>) -> &'a dyn Fn(&'a Nat<'a>) -> &'a Nat<'a> {";
+    "  self.closure(move |x| {";
+    "    self.closure(move |x2| {";
+    "      self.apply_nat(";
+    "        x,";
+    "        x2)";
+    "    })";
+    "  })";
+    "}";
+    "";
+    "fn app(&'a self) -> &'a Nat<'a> {";
+    "  self.apply_nat(";
+    "    self.closure(move |x: &'a Nat<'a>| {";
+    "      self.alloc(";
+    "        Nat::S(";
+    "          PhantomData,";
+    "          x))";
+    "    }),";
+    "    self.alloc(";
+    "      Nat::O(";
+    "        PhantomData)))";
+    "}" $>.
+  Proof. vm_compute. reflexivity. Qed.
+End ClosureAnnot.
