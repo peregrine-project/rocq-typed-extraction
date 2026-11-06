@@ -1,0 +1,5 @@
+fn main() {
+  let n = Program::new().TypedExtraction_Tests_PhantomParams_test();
+  println!("{:?}", n);
+  assert_eq!(n, 5)
+}
