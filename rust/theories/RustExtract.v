@@ -551,61 +551,49 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
 
   | tApp head arg =>
 
-    (* If the ultimate head of this application spine is a known,
-       non-polymorphic global constant, we know the box_type of each
-       argument position. When an argument in such a position is itself a
-       bare [tLambda], we can annotate its closure parameter with that
-       domain type instead of leaving it for Rust to (fail to) infer. We
-       require the argument count to exactly match the constant's declared
-       arity so there is never any ambiguity about which domain type lines
-       up with which argument (under- or over-application simply disables
-       annotation for this application). Polymorphic domains (containing a
-       [TVar]) are also left unannotated, since we have no [Γty] context at
-       an arbitrary call site to resolve them against (see
-       [box_type_closed] above). *)
+    (* If the ultimate head of this application spine is a known global
+       constant, we know the box_type of each argument position. When an
+       argument in such a position is itself a bare [tLambda], we can annotate
+       its closure parameter with that domain type instead of leaving it for
+       Rust to infer. We require the argument count to exactly match the
+       constant's declared arity so there is never any ambiguity about which
+       domain type lines up with which argument (under- or over-application
+       simply disables annotation for this application). Domains containing a
+       [TVar] are also left unannotated, since we have no [Γty] context at an
+       arbitrary call site to resolve them against (see [box_type_closed]
+       above). *)
+    let print_arg arg annot :=
+        (if needs_block arg then append "{ " else ret tt);;
+        (match arg, annot with
+         | tLambda na body, Some (TArr d _) =>
+           if box_type_closed d then
+             (name <- fresh_ident na Γ;;
+              col <- get_indent;;
+              push_indent col;;
+              append ("self.closure(move |" ++ name ++ ": ");;
+              print_type [] d;;
+              append "| {";;
+              push_indent (col + indent_size);;
+              append_nl;;
+              print_term (name :: Γ) body;;
+              pop_indent;;
+              append_nl;;
+              append "})";;
+              pop_indent)
+           else print_term Γ arg
+         | _, _ => print_term Γ arg
+         end);;
+        (if needs_block arg then append " }" else ret tt) in
     let (true_head, arg_terms) := decompose_app_terms t in
     let dtys := domain_types_for_head true_head in
-    let rev_annots :=
-        if Nat.eqb #|arg_terms| #|dtys|
-        then rev (map (fun d => Some d) dtys)
-        else repeat None #|arg_terms| in
-    let (first_annot, rest_annots) :=
-        match rev_annots with
-        | a :: r => (a, r)
-        | [] => (None, [])
-        end in
+    (* Annotations in right-to-left order, matching the traversal below. *)
+    let annots :=
+        if Nat.eqb #|arg_terms| #|dtys| then rev (map Some dtys) else [] in
 
     (fix f head args_printed annots {struct head} :=
        match head with
        | tApp head arg =>
-         let (cur, rest) :=
-             match annots with
-             | a :: r => (a, r)
-             | [] => (None, [])
-             end in
-         let printed_arg :=
-             (if needs_block arg then append "{ " else ret tt);;
-             (match arg, cur with
-              | tLambda na body, Some (TArr d _) =>
-                if box_type_closed d then
-                  (name <- fresh_ident na Γ;;
-                   col <- get_indent;;
-                   push_indent col;;
-                   append ("self.closure(move |" ++ name ++ ": ");;
-                   print_type [] d;;
-                   append "| {";;
-                   push_indent (col + indent_size);;
-                   append_nl;;
-                   print_term (name :: Γ) body;;
-                   pop_indent;;
-                   append_nl;;
-                   append "})";;
-                   pop_indent)
-                else print_term Γ arg
-              | _, _ => print_term Γ arg
-              end);;
-             (if needs_block arg then append " }" else ret tt) in
-         f head (printed_arg :: args_printed) rest
+         f head (print_arg arg (hd None annots) :: args_printed) (tl annots)
 
        | tConstruct ind i [] => print_constructor ind i args_printed
        | tConstruct ind i (_ :: _) =>
@@ -626,29 +614,7 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
            (fun pref a => append pref;; a;; append ")";; ret ")(") args_printed "(";;
          ret tt
 
-       end) head
-      [(if needs_block arg then append "{ " else ret tt);;
-       (match arg, first_annot with
-        | tLambda na body, Some (TArr d _) =>
-          if box_type_closed d then
-            (name <- fresh_ident na Γ;;
-             col <- get_indent;;
-             push_indent col;;
-             append ("self.closure(move |" ++ name ++ ": ");;
-             print_type [] d;;
-             append "| {";;
-             push_indent (col + indent_size);;
-             append_nl;;
-             print_term (name :: Γ) body;;
-             pop_indent;;
-             append_nl;;
-             append "})";;
-             pop_indent)
-          else print_term Γ arg
-        | _, _ => print_term Γ arg
-        end);;
-       (if needs_block arg then append " }" else ret tt)]
-      rest_annots
+       end) head [print_arg arg (hd None annots)] (tl annots)
 
   | tConst kn => print_const kn []
   | tConstruct ind i [] => print_constructor ind i []
