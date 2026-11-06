@@ -446,3 +446,18 @@ Module SafeHead.
   Proof. vm_compute. reflexivity. Qed.
 
 End SafeHead.
+
+(** A fixpoint applied to the innermost lambdas only, the shape of [app] when the
+    constant is not dearged, becomes a native recursive function. *)
+Module NativeRecSuffix.
+  Definition kn : kername := (MPfile ["T"], "f").
+  Definition fx : E.term :=
+    E.tFix [{| E.dname := nNamed "g"; E.dbody := E.tLambda (nNamed "x") (E.tApp (E.tRel 1) (E.tRel 0)); E.rarg := 0 |}] 0.
+
+  Example native_rec_suffix :
+    native_rec_body [Ex.TBox; Ex.TBox; Ex.TBox] kn
+      (E.tLambda (nNamed "A") (E.tLambda (nNamed "l") (E.tApp fx (E.tRel 0))))
+    = E.tLambda (nNamed "A") (E.tLambda (nNamed "x")
+        (E.tApp (E.tApp (E.tConst kn) (E.tRel 1)) (E.tRel 0))).
+  Proof. vm_compute. reflexivity. Qed.
+End NativeRecSuffix.

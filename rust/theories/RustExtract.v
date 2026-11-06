@@ -295,7 +295,19 @@ Definition native_rec_body (doms : list box_type) (kn : kername) (body : term) :
       let inner := ELiftSubst.subst
                      [mkApps (tConst kn) (rev_map tRel (seq 0 k))] 0 (E.dbody d) in
       fold_left (fun t na => tLambda na t) acc inner
-    | _ => body
+    | _ =>
+      (* [λA λl. (fix f := ..) l], the shape of a function with a section
+         parameter such as [app] when the constant is not dearged: the outer
+         lambdas stay and the fixpoint's own parameters follow them. *)
+      let j := #|args| in
+      let k' := k - j in
+      if andb (Nat.leb j k)
+              (andb (nrb_is_eta_args (skipn k' doms) j args)
+                    (ELiftSubst.closedn 1 (E.dbody d))) then
+        let inner := ELiftSubst.subst
+                       [mkApps (tConst kn) (rev_map tRel (seq 0 k'))] 0 (E.dbody d) in
+        fold_left (fun t na => tLambda na t) (skipn j acc) inner
+      else body
     end
   | _ => body
   end.
