@@ -7,6 +7,7 @@
 theories/BernsteinYangTermination.v
 theories/InternalFix.v
 theories/RustExtractTests.v
+theories/NativeRecShapes.v
 theories/Ack.v
 theories/ElmExtractExamples.v
 theories/ElmExtractTests.v
