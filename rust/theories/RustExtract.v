@@ -102,7 +102,7 @@ Fixpoint occurs_kept (ms : type_param_masks) (n : nat) (t : box_type) (args : li
 Definition unused_params (ms : type_param_masks) (n : nat) (tys : list box_type) : bitmask :=
   map (fun i => negb (existsb (fun t => occurs_kept ms i t []) tys)) (seq 0 n).
 
-Definition ctor_field_types (oib : Ex.one_inductive_body) : list box_type :=
+Definition all_ctor_field_types (oib : Ex.one_inductive_body) : list box_type :=
   flat_map (fun '(_, fields, _) => map snd fields) (Ex.ind_ctors oib).
 
 (* One step of the computation of the masks: a parameter stays removed if it
@@ -112,7 +112,7 @@ Definition update_param_masks (Σ : Ex.global_env) (ms : type_param_masks) : typ
   {| ind_param_masks :=
        map (fun '(ind, mask) =>
               match Ex.lookup_inductive Σ ind with
-              | Some oib => (ind, update mask (unused_params ms #|mask| (ctor_field_types oib)))
+              | Some oib => (ind, update mask (unused_params ms #|mask| (all_ctor_field_types oib)))
               | None => (ind, mask)
               end) (ind_param_masks ms);
      alias_param_masks :=
