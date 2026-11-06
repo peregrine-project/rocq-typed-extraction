@@ -126,14 +126,10 @@ program_preamble := [
 "  self.__alloc.alloc(F)";
 "}";
 "";
-"/* Bytes currently allocated in THIS arena.";
-"   Bumpalo never frees, so for a single-shot program (arena created once,";
-"   never reset) this is a lower bound on the process's total allocation";
-"   volume, not the true peak: numeric backends that route eliminator";
-"   predecessors through Box::leak (e.g. the GMP nat/positive/N/Z remap)";
-"   allocate outside this arena and are NOT counted here. Still useful as";
-"   a cheap, zero-dependency peak-memory proxy across benchmarks/backends";
-"   that stay entirely arena-resident. */";
+"/* Total size of the arena's chunks (bumpalo's allocated_bytes): what the";
+"   arena has reserved, rounded up to its chunk sizes, not the bytes of the";
+"   values in it. The arena never frees, so this is also its peak.";
+"   Allocations outside the arena are not counted. */";
 "fn peak_bytes(&self) -> usize {";
 "  self.__alloc.allocated_bytes()";
 "}" ] |}.
