@@ -6,7 +6,10 @@
 -arg "-output-dir extracted-code"
 theories/BernsteinYangTermination.v
 theories/InternalFix.v
+theories/PhantomParams.v
 theories/RustExtractTests.v
+theories/NativeRecShapes.v
+theories/NativeRec.v
 theories/Ack.v
 theories/ElmExtractExamples.v
 theories/ElmExtractTests.v

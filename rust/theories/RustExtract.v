@@ -53,6 +53,194 @@ Local Definition push_indent (n : nat) : PrettyPrinter unit :=
 
 Local Notation "a ^ b" := (a ++ b).
 
+(* rustc must infer the type parameters of a generic function at each call. A
+   constructor application determines the type parameters that occur in the
+   fields of the constructor, and its PhantomData argument determines none. A
+   type parameter of an inductive that occurs in no field (a phantom
+   parameter), or only as a phantom parameter of an inductive, is therefore
+   undetermined at a call such as [fromProxy (proxy nat)] for
+   [Inductive Proxy (A : Type) := proxy : Proxy A].
+   [prune_type_params] removes these parameters from the inductives and the
+   type aliases, except the index of an inductive family, and removes the
+   corresponding arguments from all types. It also removes each type parameter
+   of a constant that no longer occurs in the constant's type after this
+   removal. *)
+Section PruneTypeParams.
+Context (remaps : remaps).
+
+Import Kernames.
+
+(* Masks of the type parameters of the inductives and the type aliases. As in
+   the dearging masks, [true] marks a parameter to remove. A declaration
+   without a mask keeps all its parameters. *)
+Record type_param_masks :=
+  { ind_param_masks : list (inductive * bitmask);
+    alias_param_masks : list (kername * bitmask) }.
+
+Definition head_param_mask (ms : type_param_masks) (hd : box_type) : bitmask :=
+  match hd with
+  | TInd ind =>
+    match find (fun '(ind', _) => eq_inductive_def ind ind') (ind_param_masks ms) with
+    | Some (_, mask) => mask
+    | None => []
+    end
+  | TConst kn =>
+    match find (fun '(kn', _) => eq_kername kn kn') (alias_param_masks ms) with
+    | Some (_, mask) => mask
+    | None => []
+    end
+  | _ => []
+  end.
+
+(* Whether [TVar n] occurs in [t] applied to arguments, outside the removed
+   arguments. [args] says for each argument whether [TVar n] occurs in it. *)
+Fixpoint occurs_kept (ms : type_param_masks) (n : nat) (t : box_type) (args : list bool) : bool :=
+  match t with
+  | TApp hd arg => occurs_kept ms n hd (occurs_kept ms n arg [] :: args)
+  | TArr dom cod => occurs_kept ms n dom [] || occurs_kept ms n cod [] || existsb id args
+  | TVar m => Nat.eqb n m || existsb id args
+  | TInd _
+  | TConst _ => existsb id (masked (head_param_mask ms t) args)
+  | TBox
+  | TAny => existsb id args
+  end.
+
+(* The type parameters of a declaration that occur in none of [tys] *)
+Definition unused_params (ms : type_param_masks) (n : nat) (tys : list box_type) : bitmask :=
+  map (fun i => negb (existsb (fun t => occurs_kept ms i t []) tys)) (seq 0 n).
+
+Definition all_ctor_field_types (oib : Ex.one_inductive_body) : list box_type :=
+  flat_map (fun '(_, fields, _) => map snd fields) (Ex.ind_ctors oib).
+
+(* One step of the computation of the masks: a parameter stays removed if it
+   occurs in no field (or alias body) outside the parameters removed so far *)
+Definition update_param_masks (Σ : Ex.global_env) (ms : type_param_masks) : type_param_masks :=
+  let update mask unused := map (fun '(a, b) => andb a b) (combine mask unused) in
+  {| ind_param_masks :=
+       map (fun '(ind, mask) =>
+              match Ex.lookup_inductive Σ ind with
+              | Some oib => (ind, update mask (unused_params ms #|mask| (all_ctor_field_types oib)))
+              | None => (ind, mask)
+              end) (ind_param_masks ms);
+     alias_param_masks :=
+       map (fun '(kn, mask) =>
+              match Ex.lookup_env Σ kn with
+              | Some (Ex.TypeAliasDecl (Some (_, bt))) => (kn, update mask (unused_params ms #|mask| [bt]))
+              | _ => (kn, mask)
+              end) (alias_param_masks ms) |}.
+
+Definition count_removed_params (ms : type_param_masks) : nat :=
+  fold_left (fun n '(_, mask) => n + count_ones mask) (ind_param_masks ms) 0
+  + fold_left (fun n '(_, mask) => n + count_ones mask) (alias_param_masks ms) 0.
+
+(* An index of an inductive family: an arity type variable with no name, which
+   dearging leaves in place of the index.  It is kept, because #24 casts a
+   branch of a match on such a family to the index's type. *)
+Definition is_family_index (tv : Ex.type_var_info) : bool :=
+  andb (Ex.tvar_is_arity tv)
+       (match Ex.tvar_name tv with BasicAst.nAnon => true | _ => false end).
+
+(* Start from removing every parameter of an inductive or a type alias that is
+   not remapped, except the indices of a family, and keep the parameters that
+   occur outside the removed ones until no mask changes. Each step that changes a mask keeps one more
+   parameter, so [count_removed_params] steps suffice. *)
+Definition type_param_masks_of (Σ : Ex.global_env) : type_param_masks :=
+  let all_removed n := repeat true n in
+  let init :=
+      {| ind_param_masks :=
+           flat_map (fun '(kn, _, decl) =>
+                       match decl with
+                       | Ex.InductiveDecl mib =>
+                         mapi (fun i oib =>
+                                 let ind := mkInd kn i in
+                                 match remap_inductive remaps ind with
+                                 | Some _ => (ind, [])
+                                 | None => (ind, map (fun tv => negb (is_family_index tv)) (ind_type_vars oib))
+                                 end) (Ex.ind_bodies mib)
+                       | _ => []
+                       end) Σ;
+         alias_param_masks :=
+           flat_map (fun '(kn, _, decl) =>
+                       match decl, remap_constant remaps kn, remap_inline_constant remaps kn with
+                       | Ex.TypeAliasDecl (Some (tvars, _)), None, None => [(kn, all_removed #|tvars|)]
+                       | _, _, _ => []
+                       end) Σ |} in
+  let fix go fuel ms :=
+      match fuel with
+      | 0 => ms
+      | S fuel =>
+        let ms' := update_param_masks Σ ms in
+        if Nat.eqb (count_removed_params ms') (count_removed_params ms) then ms
+        else go fuel ms'
+      end in
+  go (S (count_removed_params init)) init.
+
+(* The type parameter [i] of a declaration whose parameters [mask] removes;
+   a removed parameter does not occur outside removed arguments *)
+Definition rename_type_param (mask : bitmask) (i : nat) : box_type :=
+  if has_bit i mask then TAny else TVar (i - count_ones (firstn i mask)).
+
+(* Remove the arguments that the masks remove from [t] applied to [args], and
+   rename its type parameters by [rename] *)
+Fixpoint prune_type
+         (ms : type_param_masks)
+         (rename : nat -> box_type)
+         (t : box_type)
+         (args : list box_type) : box_type :=
+  match t with
+  | TApp hd arg => prune_type ms rename hd (prune_type ms rename arg [] :: args)
+  | TArr dom cod => mkTApps (TArr (prune_type ms rename dom []) (prune_type ms rename cod [])) args
+  | TVar i => mkTApps (rename i) args
+  | TInd _
+  | TConst _ => mkTApps t (masked (head_param_mask ms t) args)
+  | TBox
+  | TAny => mkTApps t args
+  end.
+
+Definition prune_one_inductive_body
+           (ms : type_param_masks)
+           (mask : bitmask)
+           (oib : Ex.one_inductive_body) : Ex.one_inductive_body :=
+  let prune t := prune_type ms (rename_type_param mask) t [] in
+  {| Ex.ind_name := Ex.ind_name oib;
+     Ex.ind_propositional := Ex.ind_propositional oib;
+     Ex.ind_kelim := Ex.ind_kelim oib;
+     ind_type_vars := masked mask (ind_type_vars oib);
+     Ex.ind_ctors := map (fun '(name, fields, arity) =>
+                         (name, map (fun '(na, t) => (na, prune t)) fields, arity))
+                      (Ex.ind_ctors oib);
+     Ex.ind_projs := map (fun '(name, t) => (name, prune t)) (Ex.ind_projs oib) |}.
+
+Definition prune_decl
+           (ms : type_param_masks)
+           (kn : kername)
+           (decl : Ex.global_decl) : Ex.global_decl :=
+  match decl with
+  | Ex.ConstantDecl cst =>
+    let '(tvars, ty) := Ex.cst_type cst in
+    let mask := unused_params ms #|tvars| [ty] in
+    Ex.ConstantDecl {| Ex.cst_type := (masked mask tvars, prune_type ms (rename_type_param mask) ty []);
+                    Ex.cst_body := Ex.cst_body cst |}
+  | Ex.InductiveDecl mib =>
+    Ex.InductiveDecl
+      {| Ex.ind_finite := Ex.ind_finite mib;
+         Ex.ind_npars := Ex.ind_npars mib;
+         Ex.ind_bodies := mapi (fun i oib =>
+                               prune_one_inductive_body
+                                 ms (head_param_mask ms (TInd (mkInd kn i))) oib)
+                            (Ex.ind_bodies mib) |}
+  | Ex.TypeAliasDecl (Some (tvars, bt)) =>
+    let mask := head_param_mask ms (TConst kn) in
+    Ex.TypeAliasDecl (Some (masked mask tvars, prune_type ms (rename_type_param mask) bt []))
+  | Ex.TypeAliasDecl None => decl
+  end.
+
+Definition prune_type_params (Σ : Ex.global_env) : Ex.global_env :=
+  let ms := type_param_masks_of Σ in
+  map (fun '(kn, has_deps, decl) => (kn, has_deps, prune_decl ms kn decl)) Σ.
+
+End PruneTypeParams.
+
 Section FixEnv.
 Context (Σ : Ex.global_env).
 Context (remaps : remaps).
@@ -309,9 +497,37 @@ Definition native_rec_body (doms : list box_type) (kn : kername) (body : term) :
       let inner := ELiftSubst.subst
                      [mkApps (tConst kn) (rev_map tRel (seq 0 k))] 0 (E.dbody d) in
       fold_left (fun t na => tLambda na t) acc inner
-    | _ => body
+    | _ =>
+      (* [λA λl. (fix f := ..) l], the shape of a function with a section
+         parameter such as [app] when the constant is not dearged: the outer
+         lambdas stay and the fixpoint's own parameters follow them. *)
+      let j := #|args| in
+      let k' := k - j in
+      if andb (Nat.leb j k)
+              (andb (nrb_is_eta_args (skipn k' doms) j args)
+                    (ELiftSubst.closedn 1 (E.dbody d))) then
+        let inner := ELiftSubst.subst
+                       [mkApps (tConst kn) (rev_map tRel (seq 0 k'))] 0 (E.dbody d) in
+        fold_left (fun t na => tLambda na t) (skipn j acc) inner
+      else body
     end
   | _ => body
+  end.
+
+(* Whether a box_type contains no free type variables. Only such types are
+   safe to print outside of a definition's own [Γty] context: printing a
+   [TVar n] requires resolving [n] against the [Γty] of the definition that
+   introduced it, and at an arbitrary call site we do not have that context
+   available (nor, without full type inference, the type it was instantiated
+   to). Restricting closure-parameter annotations (see [print_term]'s
+   [tApp] case) to [box_type_closed] domains sidesteps this alignment
+   problem entirely: we simply never print a [TVar] we can't resolve. *)
+Fixpoint box_type_closed (t : box_type) : bool :=
+  match t with
+  | TVar _ => false
+  | TBox | TAny | TInd _ | TConst _ => true
+  | TArr dom cod => box_type_closed dom && box_type_closed cod
+  | TApp hd arg => box_type_closed hd && box_type_closed arg
   end.
 
 (* Get number of arguments that a constant expects when we print it *)
@@ -683,6 +899,22 @@ Definition needs_block (t : term) : bool :=
   | _ => false
   end.
 
+(* If [head] is a reference to a known global constant, return the box_type
+   of each of its declared parameters (in order), as recorded in its
+   erasure-time type signature. Anything else (locally bound heads,
+   constructors, unknown constants) yields no information: callers must
+   treat the empty list as "no annotation available" rather than "this
+   function takes zero arguments". *)
+Definition domain_types_for_head (head : term) : list box_type :=
+  match head with
+  | tConst kn =>
+    match Ex.lookup_constant Σ kn with
+    | Some cst => fst (decompose_arr (snd (Ex.cst_type cst)))
+    | None => []
+    end
+  | _ => []
+  end.
+
 Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit :=
   match t with
   | tBox => append term_box_symbol
@@ -734,14 +966,49 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
 
   | tApp head arg =>
 
-    (fix f head args_printed {struct head} :=
+    (* If the ultimate head of this application spine is a known global
+       constant, we know the box_type of each argument position. When an
+       argument in such a position is itself a bare [tLambda], we can annotate
+       its closure parameter with that domain type instead of leaving it for
+       Rust to infer. We require the argument count to exactly match the
+       constant's declared arity so there is never any ambiguity about which
+       domain type lines up with which argument (under- or over-application
+       simply disables annotation for this application). Domains containing a
+       [TVar] are also left unannotated, since we have no [Γty] context at an
+       arbitrary call site to resolve them against (see [box_type_closed]
+       above). *)
+    let print_arg arg annot :=
+        (if needs_block arg then append "{ " else ret tt);;
+        (match arg, annot with
+         | tLambda na body, Some (TArr d _) =>
+           if box_type_closed d then
+             (name <- fresh_ident na Γ;;
+              col <- get_indent;;
+              push_indent col;;
+              append ("self.closure(move |" ++ name ++ ": ");;
+              print_type [] d;;
+              append "| {";;
+              push_indent (col + indent_size);;
+              append_nl;;
+              print_term (name :: Γ) body;;
+              pop_indent;;
+              append_nl;;
+              append "})";;
+              pop_indent)
+           else print_term Γ arg
+         | _, _ => print_term Γ arg
+         end);;
+        (if needs_block arg then append " }" else ret tt) in
+    let (true_head, arg_terms) := EAstUtils.decompose_app t in
+    let dtys := domain_types_for_head true_head in
+    (* Annotations in right-to-left order, matching the traversal below. *)
+    let annots :=
+        if Nat.eqb #|arg_terms| #|dtys| then rev (map Some dtys) else [] in
+
+    (fix f head args_printed annots {struct head} :=
        match head with
        | tApp head arg =>
-         let printed_arg :=
-             (if needs_block arg then append "{ " else ret tt);;
-             print_term Γ arg;;
-             if needs_block arg then append " }" else ret tt in
-         f head (printed_arg :: args_printed)
+         f head (print_arg arg (hd None annots) :: args_printed) (tl annots)
 
        | tConstruct ind i [] => print_constructor ind i args_printed
        | tConstruct ind i (_ :: _) =>
@@ -771,10 +1038,7 @@ Fixpoint print_term (Γ : list ident) (t : term) {struct t} : PrettyPrinter unit
            (fun pref a => append pref;; a;; append ")";; ret ")(") args_printed "(";;
          ret tt
 
-       end) head [if needs_block arg then
-                    append "{ ";; print_term Γ arg;; append " }"
-                  else
-                    print_term Γ arg]
+       end) head [print_arg arg (hd None annots)] (tl annots)
 
   | tConst kn => print_const kn []
   | tConstruct ind i [] => print_constructor ind i []
@@ -1075,7 +1339,7 @@ Class Preamble :=
 
 Context `{Preamble}.
 
-Definition print_program : PrettyPrinter unit :=
+Definition print_program_aux : PrettyPrinter unit :=
   sig_col <- get_indent;;
   push_indent sig_col;;
 
@@ -1154,6 +1418,14 @@ Definition print_program : PrettyPrinter unit :=
 
   pop_indent.
 End FixEnv.
+
+Definition print_program
+           (Σ : Ex.global_env)
+           (remaps : remaps)
+           `{RustPrintConfig}
+           (ind_attrs : ind_attr_map)
+           `{Preamble} : PrettyPrinter unit :=
+  print_program_aux (prune_type_params remaps Σ) remaps ind_attrs.
 
 Definition extract_rust_within_rocq
            (overridden_masks : Kernames.kername -> option bitmask)

@@ -446,3 +446,109 @@ Module SafeHead.
   Proof. vm_compute. reflexivity. Qed.
 
 End SafeHead.
+
+(** A fixpoint applied to the innermost lambdas only, the shape of [app] when the
+    constant is not dearged, becomes a native recursive function. *)
+Module NativeRecSuffix.
+  Definition kn : kername := (MPfile ["T"], "f").
+  Definition fx : E.term :=
+    E.tFix [{| E.dname := nNamed "g"; E.dbody := E.tLambda (nNamed "x") (E.tApp (E.tRel 1) (E.tRel 0)); E.rarg := 0 |}] 0.
+
+  Example native_rec_suffix :
+    native_rec_body [Ex.TBox; Ex.TBox; Ex.TBox] kn
+      (E.tLambda (nNamed "A") (E.tLambda (nNamed "l") (E.tApp fx (E.tRel 0))))
+    = E.tLambda (nNamed "A") (E.tLambda (nNamed "x")
+        (E.tApp (E.tApp (E.tConst kn) (E.tRel 1)) (E.tRel 0))).
+  Proof. vm_compute. reflexivity. Qed.
+End NativeRecSuffix.
+
+(* A lambda passed to a monomorphic constant applied to its full arity: the
+   closure parameter is annotated with the domain type. *)
+Module ClosureAnnot.
+  Definition apply_nat (f : nat -> nat) (n : nat) : nat := f n.
+  Definition app := apply_nat (fun x => S x) 0.
+  MetaRocq Quote Recursively Definition ex := app.
+
+  Example ClosureAnnot_test :
+    extract ex = Ok <$
+    "#[derive(Debug, Clone)]";
+    "pub enum Nat<'a> {";
+    "  O(PhantomData<&'a ()>),";
+    "  S(PhantomData<&'a ()>, &'a Nat<'a>)";
+    "}";
+    "";
+    "fn apply_nat(&'a self, f: &'a dyn Fn(&'a Nat<'a>) -> &'a Nat<'a>, n: &'a Nat<'a>) -> &'a Nat<'a> {";
+    "  hint_app(f)(n)";
+    "}";
+    "fn apply_nat__curried(&'a self) -> &'a dyn Fn(&'a dyn Fn(&'a Nat<'a>) -> &'a Nat<'a>) -> &'a dyn Fn(&'a Nat<'a>) -> &'a Nat<'a> {";
+    "  self.closure(move |x| {";
+    "    self.closure(move |x2| {";
+    "      self.apply_nat(";
+    "        x,";
+    "        x2)";
+    "    })";
+    "  })";
+    "}";
+    "";
+    "fn app(&'a self) -> &'a Nat<'a> {";
+    "  self.apply_nat(";
+    "    self.closure(move |x: &'a Nat<'a>| {";
+    "      self.alloc(";
+    "        Nat::S(";
+    "          PhantomData,";
+    "          x))";
+    "    }),";
+    "    self.alloc(";
+    "      Nat::O(";
+    "        PhantomData)))";
+    "}" $>.
+  Proof. vm_compute. reflexivity. Qed.
+End ClosureAnnot.
+
+(** An index of an inductive family keeps its type variable, so that a match on the
+    family can cast its branches. *)
+Module FamilyIndex.
+  Inductive GE : Type -> Type := gn : nat -> GE nat | gb : bool -> GE bool.
+  Definition ge_val (A : Type) (g : GE A) : nat := match g with gn n => n | gb _ => 0 end.
+  MetaRocq Quote Recursively Definition quoted := ge_val.
+
+  Example test :
+    extract quoted = Ok <$
+    "#[derive(Debug, Clone)]";
+    "pub enum Nat<'a> {";
+    "  O(PhantomData<&'a ()>),";
+    "  S(PhantomData<&'a ()>, &'a Nat<'a>)";
+    "}";
+    "";
+    "#[derive(Debug, Clone)]";
+    "pub enum Bool<'a> {";
+    "  true(PhantomData<&'a ()>),";
+    "  false(PhantomData<&'a ()>)";
+    "}";
+    "";
+    "#[derive(Debug, Clone)]";
+    "pub enum GE<'a, a> {";
+    "  gn(PhantomData<&'a a>, &'a Nat<'a>),";
+    "  gb(PhantomData<&'a a>, &'a Bool<'a>)";
+    "}";
+    "";
+    "fn ge_val<A: Copy>(&'a self, g: &'a GE<'a, A>) -> &'a Nat<'a> {";
+    "  match g {";
+    "    &GE::gn(_, n) => {";
+    "      n";
+    "    },";
+    "    &GE::gb(_, b) => {";
+    "      self.alloc(";
+    "        Nat::O(";
+    "          PhantomData))";
+    "    },";
+    "  }";
+    "}";
+    "fn ge_val__curried<A: Copy>(&'a self) -> &'a dyn Fn(&'a GE<'a, A>) -> &'a Nat<'a> {";
+    "  self.closure(move |x| {";
+    "    self.ge_val(";
+    "      x)";
+    "  })";
+    "}" $>.
+  Proof. vm_compute. reflexivity. Qed.
+End FamilyIndex.

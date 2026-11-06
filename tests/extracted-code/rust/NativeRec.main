@@ -1,0 +1,18 @@
+
+fn to_u64(n: &Nat) -> u64 { match n { Nat::O(_) => 0, Nat::S(_, m) => 1 + to_u64(m) } }
+fn of_u64<'a>(p: &'a Program, n: u64) -> &'a Nat<'a> {
+  if n == 0 { p.alloc(Nat::O(PhantomData)) } else { p.alloc(Nat::S(PhantomData, of_u64(p, n - 1))) }
+}
+
+fn main() {
+  let p = Program::new();
+  let mut l = p.all();
+  let mut v = vec![];
+  while let List::cons(_, _, h, t) = l { v.push(to_u64(h)); l = t; }
+  println!("{:?}", v);
+  assert_eq!(v, [7, 10, 7, 3, 5, 6, 4, 1, 8, 7, 7]);
+  // Saturated calls: they type-check only if addk and pa are printed as native
+  // functions of all their arguments, not as functions returning a closure.
+  assert_eq!(to_u64(p.addk(of_u64(&p, 3), of_u64(&p, 4))), 7);
+  assert_eq!(to_u64(p.pa(of_u64(&p, 3), of_u64(&p, 4))), 7);
+}
