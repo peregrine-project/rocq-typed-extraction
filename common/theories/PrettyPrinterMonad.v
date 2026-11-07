@@ -6,7 +6,7 @@ From MetaRocq.Erasure.Typed Require Import Utils.
 From MetaRocq.Utils Require Import ResultMonad.
 From TypedExtraction.Common Require Import Common.
 
-Import String.
+Import bytestring.String.
 Import MonadNotation.
 Import ListNotations.
 Local Open Scope bs_scope.
