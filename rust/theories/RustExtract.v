@@ -27,6 +27,13 @@ Import MonadNotation.
 
 Open Scope bs_scope.
 
+Fixpoint ends_with_comma (s : string) : bool :=
+  match s with
+  | String.EmptyString => false
+  | String.String c String.EmptyString => Byte.eqb c ","%byte
+  | String.String _ s => ends_with_comma s
+  end.
+
 
 Local Definition indent_size := 2.
 
@@ -389,7 +396,9 @@ Section print_term.
     col <- get_current_line_length;;
     push_indent col;;
 
-    append (eliminator ^ "(");;
+    (* An eliminator ending with a comma brings its own parenthesis and leading
+       arguments (see [re_ind_match]). *)
+    append (if ends_with_comma eliminator then eliminator else eliminator ^ "(");;
 
     oib <- wrap_result (lookup_ind_decl ind) id;;
 

@@ -4,6 +4,12 @@ From MetaRocq.Utils Require Import MRString.
 Record remapped_inductive := build_remapped_inductive {
   re_ind_name : string;
   re_ind_ctors : list string;
+  (* The eliminator of a remapped [match]: [Some e] prints
+     [e(branch1, ..., branchn, discr)].  When [e] ends with a comma, its own
+     opening parenthesis and leading arguments are kept, so
+     [Some "__nat_elim!(self,"] prints [__nat_elim!(self, branch1, ..., discr)];
+     a [macro_rules!] eliminator gets [self] this way, which hygiene does not
+     let its body name. *)
   re_ind_match : option string;
   }.
 
