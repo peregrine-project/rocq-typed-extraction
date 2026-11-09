@@ -30,9 +30,16 @@ Open Scope bs_scope.
 Fixpoint ends_with_comma (s : string) : bool :=
   match s with
   | String.EmptyString => false
-  | String.String c String.EmptyString => Byte.eqb c ","%byte
+  (* A match, not [Byte.eqb]: the plugin's extracted OCaml opens both [Byte]
+     and [Nat0], and the unqualified [eqb] resolves to [Nat0.eqb]. *)
+  | String.String Byte.x2c String.EmptyString => true
   | String.String _ s => ends_with_comma s
   end.
+
+Example ends_with_comma_ok :
+  ends_with_comma "__nat_elim!(self," = true /\ ends_with_comma "f" = false /\
+  ends_with_comma ",f" = false /\ ends_with_comma "" = false.
+Proof. repeat split. Qed.
 
 
 Local Definition indent_size := 2.
