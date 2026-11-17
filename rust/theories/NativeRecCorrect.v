@@ -39,6 +39,7 @@ From MetaRocq.Utils Require Import bytestring MRList.
 From MetaRocq.Common Require Import Kernames BasicAst.
 From MetaRocq.Erasure Require Import EAst EAstUtils ELiftSubst ECSubst EGlobalEnv EWcbvEval.
 From TypedExtraction.Rust Require Import RustExtract.
+From TypedExtraction.Rust Require NativeRecHcore.
 From MetaRocq.Erasure.Typed Require ExAst.
 From Equations Require Import Equations.
 
@@ -659,6 +660,37 @@ Corollary native_rec_body_fo_obs_equiv {wfl : EWcbvEval.WcbvFlags}
 Proof.
   intros HswapSigma HswapSigma' Hcore.
   eapply native_rec_body_fo_obs_equiv_reduction; eassumption.
+Qed.
+
+(** ** The first-order equivalence without hypotheses
+
+    At unguarded fixpoints and applied constructors, the flags at which the Rust
+    backend consumes its λ□ program ([target_wcbv_flags]), [NativeRecHcore.v]
+    proves [Hcore] and both head swaps, so the equivalence holds outright for a
+    fixpoint whose body is a closed λ. *)
+
+Lemma fo_value_fo v : fo_value v -> NativeRecHcore.fo v.
+Proof.
+  revert v. fix IH 2. intros v H. destruct H.
+  - constructor.
+  - apply NativeRecHcore.fo_mkApps; [constructor|].
+    revert args H. fix aux 2. intros args H. destruct H; constructor; auto.
+Qed.
+
+Corollary native_rec_body_fo_obs_equiv_target {wfl : EWcbvEval.WcbvFlags}
+      (Hg : with_guarded_fix = false) (Hb : with_constructor_as_block = false)
+      (Sigma Sigma' : global_declarations) (kn : kername) (d : def term) :
+  declared_constant Sigma kn {| cst_body := Some (tFix [d] 0) |} ->
+  declared_constant Sigma' kn {| cst_body := Some (native_rec_body doms kn (tFix [d] 0)) |} ->
+  (forall c, c <> kn -> lookup_env Sigma c = lookup_env Sigma' c) ->
+  is_true (closedn 1 (dbody d)) -> is_true (isLambda (dbody d)) ->
+  forall (args : list term) (v : term), fo_value v ->
+    ((eval Sigma  (mkApps (tConst kn) args) v -> eval Sigma' (mkApps (tConst kn) args) v) *
+     (eval Sigma' (mkApps (tConst kn) args) v -> eval Sigma  (mkApps (tConst kn) args) v))%type.
+Proof.
+  intros HS HS' Ho Hc Hl args v Hv.
+  rewrite native_rec_body_bare, <- closed_subst in HS' by reflexivity.
+  eapply NativeRecHcore.native_fo_obs_equiv; eauto using fo_value_fo.
 Qed.
 
 End NativeRec.
