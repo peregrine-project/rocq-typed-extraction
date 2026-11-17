@@ -4,4 +4,5 @@ theories/Printing.v
 theories/RustExtract.v
 theories/TopLevelFixes.v
 theories/PluginExtract.v
+theories/NativeRecHcore.v
 theories/NativeRecCorrect.v
