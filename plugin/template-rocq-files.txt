@@ -118,6 +118,8 @@ logic1.ml
 logic1.mli
 logic2.ml
 logic2.mli
+mRClasses.ml
+mRClasses.mli
 mRCompare.ml
 mRCompare.mli
 mRFSets.ml
@@ -174,6 +176,8 @@ natDef.ml
 natDef.mli
 noConfusion.ml
 noConfusion.mli
+nonEmptyLevelExprSet.ml
+nonEmptyLevelExprSet.mli
 number.ml
 number.mli
 optionMonad.ml
@@ -220,6 +224,8 @@ relation.ml
 relation.mli
 run_extractable.ml
 run_extractable.mli
+semiLattice.ml
+semiLattice.mli
 show.ml
 show.mli
 signature.ml
@@ -245,6 +251,8 @@ typing0.ml
 typing0.mli
 uint63Axioms.ml
 uint63Axioms.mli
+univConstraintType.ml
+univConstraintType.mli
 universes0.ml
 universes0.mli
 wf.ml

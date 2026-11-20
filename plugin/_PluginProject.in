@@ -3,6 +3,8 @@
 -generate-meta-for-package rocq-typed-extraction
 -I src
 
+src/bool0.ml
+src/bool0.mli
 src/certifyingBeta.ml
 src/certifyingBeta.mli
 src/certifyingInlining.ml
@@ -11,6 +13,12 @@ src/closedAux.ml
 src/closedAux.mli
 src/common1.ml
 src/common1.mli
+src/common2.ml
+src/common2.mli
+src/common3.ml
+src/common3.mli
+src/deciders.ml
+src/deciders.mli
 src/eAst.ml
 src/eAst.mli
 src/eAstUtils.ml
@@ -39,12 +47,28 @@ src/extraction0.ml
 src/extraction0.mli
 src/fin.ml
 src/fin.mli
+src/hornClauses.ml
+src/hornClauses.mli
+src/hornSemilatticeEquiv.ml
+src/hornSemilatticeEquiv.mli
 src/init0.ml
 src/init0.mli
+src/initialSemilattice.ml
+src/initialSemilattice.mli
+src/interfaces.ml
+src/interfaces.mli
+src/model.ml
+src/model.mli
+src/models.ml
+src/models.mli
+src/mRInstances.ml
+src/mRInstances.mli
 src/optimize.ml
 src/optimize.mli
 src/optimizePropDiscr.ml
 src/optimizePropDiscr.mli
+src/partialLoopChecking.ml
+src/partialLoopChecking.mli
 src/pCUICAst.ml
 src/pCUICAst.mli
 src/pCUICAstUtils.ml
@@ -55,6 +79,8 @@ src/pCUICErrors.ml
 src/pCUICErrors.mli
 src/pCUICEqualityDec.ml
 src/pCUICEqualityDec.mli
+src/pCUICGlobalEnv.ml
+src/pCUICGlobalEnv.mli
 src/pCUICNormal.ml
 src/pCUICNormal.mli
 src/pCUICPosition.ml
@@ -99,14 +125,14 @@ src/transform0.ml
 src/transform0.mli
 src/uGraph0.ml
 src/uGraph0.mli
+src/univLoopChecking.ml
+src/univLoopChecking.mli
 src/utils.ml
 src/utils.mli
 src/vector.ml
 src/vector.mli
 src/vectorDef.ml
 src/vectorDef.mli
-src/wGraph.ml
-src/wGraph.mli
 
 src/g_typed_extraction.mlg
 src/typed_extraction_plugin.mlpack

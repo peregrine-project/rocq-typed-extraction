@@ -10,7 +10,7 @@ Extract Inductive Number.int => unit [ "(fun _ -> ())" "(fun _ -> ())" ] "(fun _
 
 Extraction Blacklist
            Classes config uGraph Universes Ast String List Nat Int Init
-           UnivSubst Typing Checker Retyping OrderedType Logic Common Equality Classes
+           UnivSubst Typing Checker Retyping OrderedType Logic Common Common0 Equality Classes
            Uint63 Extraction Monad.
 Set Warnings "-extraction-opaque-accessed".
 Set Warnings "-extraction-reserved-identifier".
